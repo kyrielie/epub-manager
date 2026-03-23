@@ -41,6 +41,10 @@
         <svg viewBox="0 0 20 20"><path d="M10 4v6l4 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/><path d="M3.5 10a6.5 6.5 0 1 1 1.1 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/><path d="M3.5 6v4h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
         History
       </button>
+      <button class="nav-btn" data-view="settings">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="10" cy="10" r="2.5"/><path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.22 4.22l1.42 1.42M14.36 14.36l1.42 1.42M4.22 15.78l1.42-1.42M14.36 5.64l1.42-1.42"/></svg>
+        Settings
+      </button>
     </nav>
   </div>
 
@@ -75,6 +79,8 @@
         <button class="pill active" data-filter="all">All</button>
         <button class="pill" data-filter="read">Read</button>
         <button class="pill" data-filter="unread">Unread</button>
+        <button class="pill" data-filter="later">Later</button>
+        <button class="pill" data-filter="rejected">Rejected</button>
       </div>
       <div id="sort-wrap">
         <select id="sort-select">
@@ -131,12 +137,21 @@
   <!-- Sort / triage view -->
   <div id="view-sort" class="view">
     <div id="sort-view-header">
-      <p id="sort-progress"></p>
+      <div id="sort-stats-row">
+        <span class="sort-stat" id="sstat-remaining"><span class="sort-stat-n" id="ss-remaining">—</span><span class="sort-stat-l">remaining</span></span>
+        <span class="sort-stat" id="sstat-read"><span class="sort-stat-n" id="ss-read">—</span><span class="sort-stat-l">marked read</span></span>
+        <span class="sort-stat"><span class="sort-stat-n" id="ss-later">—</span><span class="sort-stat-l">for later</span></span>
+        <span class="sort-stat"><span class="sort-stat-n" id="ss-rejected">—</span><span class="sort-stat-l">rejected</span></span>
+        <span class="sort-stat"><span class="sort-stat-n" id="ss-today">—</span><span class="sort-stat-l">today</span></span>
+        <span class="sort-stat"><span class="sort-stat-n" id="ss-pace">—</span><span class="sort-stat-l">/ hour</span></span>
+        <span class="sort-stat"><span class="sort-stat-n" id="ss-eta">—</span><span class="sort-stat-l">est. done</span></span>
+      </div>
     </div>
     <div id="sort-arena">
       <div id="sort-hint-left" class="sort-hint">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M19 12H5M5 12l7-7M5 12l7 7"/></svg>
         <span>Skip · unread</span>
+        <span class="sort-hint-key">Space</span>
       </div>
       <div id="sort-card-wrap">
         <div id="sort-card"></div>
@@ -144,7 +159,12 @@
       <div id="sort-hint-right" class="sort-hint">
         <span>Mark read</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M5 12h14M14 5l7 7-7 7"/></svg>
+        <span class="sort-hint-key">Enter</span>
       </div>
+    </div>
+    <div id="sort-tag-btns">
+      <button class="sort-tag-btn later"  id="btn-sort-later">    Later  <kbd>L</kbd></button>
+      <button class="sort-tag-btn reject" id="btn-sort-reject">   Reject <kbd>X</kbd></button>
     </div>
     <div id="sort-open-btns"></div>
     <div id="sort-empty">
@@ -166,6 +186,43 @@
     </header>
     <div id="history-list"></div>
     <div id="history-empty"><p>No matches recorded yet.</p></div>
+  </div>
+
+  <!-- Settings view -->
+  <div id="view-settings" class="view">
+    <header class="view-header">
+      <h2 style="font-family:'Instrument Serif',serif;font-weight:400;font-size:1.6rem;margin:0;">Settings</h2>
+    </header>
+    <div id="settings-body">
+
+      <section class="settings-section">
+        <div class="settings-section-title">Content rating filter</div>
+        <p class="settings-section-desc">Show only works rated at or below the selected level. Applies to Library, Rankings, Compare, and Sort queue. Works with no rating tag are always shown.</p>
+        <div class="settings-radios">
+          <label class="settings-radio-row">
+            <input type="radio" name="max-rating" value="explicit" checked/>
+            <span class="settings-radio-swatch tag-rating-explicit">Explicit</span>
+            <span class="settings-radio-label">Show everything</span>
+          </label>
+          <label class="settings-radio-row">
+            <input type="radio" name="max-rating" value="mature"/>
+            <span class="settings-radio-swatch tag-rating-mature">Mature</span>
+            <span class="settings-radio-label">Hide Explicit works</span>
+          </label>
+          <label class="settings-radio-row">
+            <input type="radio" name="max-rating" value="teen"/>
+            <span class="settings-radio-swatch tag-rating-teen">Teen and Up</span>
+            <span class="settings-radio-label">Hide Explicit and Mature works</span>
+          </label>
+          <label class="settings-radio-row">
+            <input type="radio" name="max-rating" value="general"/>
+            <span class="settings-radio-swatch tag-rating-general">General Audiences</span>
+            <span class="settings-radio-label">Show only General Audiences works</span>
+          </label>
+        </div>
+      </section>
+
+    </div>
   </div>
 
 </main>

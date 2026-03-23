@@ -8,17 +8,47 @@ const OVERSCAN    = 8;   // extra rows rendered above/below the visible window
 
 // ── State ──────────────────────────────────────────────────────────────────
 const state = {
-  calibreBooks: [],   // raw from main — never mutated
-  bookMap:      {},   // id → calibreBook  (O(1) lookup)
-  searchIndex:  [],   // parallel to calibreBooks: precomputed lowercase search string
-  userBooks:    {},   // id → { read, customTags, elo, matchCount }
+  calibreBooks: [],
+  bookMap:      {},
+  searchIndex:  [],
+  userBooks:    {},
   libraryPath:  '',
   filter:       'all',
   sort:         'title',
   search:       '',
   detailId:     null,
-  visibleList:  [],   // current filtered+sorted array
+  visibleList:  [],
 };
+
+// Settings — persisted alongside userBooks
+const settings = {
+  maxRating: 'explicit',  // 'explicit' | 'mature' | 'teen' | 'general'
+};
+
+// Rating hierarchy: tags to detect each level (case-insensitive substring match)
+const RATING_TAGS = {
+  explicit: 'explicit',
+  mature:   'mature',
+  teen:     'teen and up',
+  general:  'general audiences',
+};
+const RATING_ORDER = ['general', 'teen', 'mature', 'explicit']; // ascending permissiveness
+
+function bookRating(book) {
+  const allTags = [...(book.tags || []), ...(book.customTags || [])].map(t => t.toLowerCase());
+  for (const level of ['explicit', 'mature', 'teen', 'general']) {
+    if (allTags.some(t => t.includes(RATING_TAGS[level]))) return level;
+  }
+  return null; // unrated
+}
+
+function bookPassesRatingFilter(book) {
+  const maxIdx  = RATING_ORDER.indexOf(settings.maxRating);
+  const rating  = bookRating(book);
+  if (!rating) return true; // unrated always shown
+  const bookIdx = RATING_ORDER.indexOf(rating);
+  return bookIdx <= maxIdx;
+}
 
 // Match history lives outside state so it's not mixed with per-book userBooks keys.
 // Each entry: { winnerId, loserId, winnerEloBefore, loserEloBefore, winnerEloAfter, loserEloAfter, ts }
@@ -72,8 +102,12 @@ function recomputeVisible() {
     const b = books[i];
     const u = uBooks[b.id] || { read: false, customTags: [], elo: ELO_DEFAULT, matchCount: 0 };
 
-    if (filter === 'read'   && !u.read) continue;
-    if (filter === 'unread' &&  u.read) continue;
+    if (filter === 'read'     && !u.read) continue;
+    if (filter === 'unread'   &&  u.read) continue;
+    if (filter === 'later'    && !(u.customTags && u.customTags.includes('later')))    continue;
+    if (filter === 'rejected' && !(u.customTags && u.customTags.includes('rejected'))) continue;
+
+    if (!bookPassesRatingFilter(b)) continue;
 
     if (q) {
       const inIndex  = idx[i].includes(q);
@@ -107,6 +141,7 @@ function scheduleSave() {
       libraryPath: state.libraryPath,
       books: state.userBooks,
       history: matchHistory,
+      settings,
     });
   }, 600);
 }
@@ -114,8 +149,9 @@ function scheduleSave() {
 // ── Boot ───────────────────────────────────────────────────────────────────
 async function boot() {
   const data = await window.api.getAppData();
-  if (data.books)   state.userBooks = data.books;
-  if (data.history) matchHistory    = data.history;
+  if (data.books)    state.userBooks = data.books;
+  if (data.history)  matchHistory    = data.history;
+  if (data.settings) Object.assign(settings, data.settings);
   attachEvents();
   if (data.libraryPath) {
     await loadLibrary(data.libraryPath);
@@ -232,11 +268,11 @@ function makeBookRow(book) {
   });
   titleLine.append(titleSpan, bySpan, authorSpan);
 
-  // Line 2: tags (one line, overflow hidden) — no classification, all tags equal
+  // Line 2: tags (one line, overflow hidden) — clickable to filter
   const tagsLine = document.createElement('div');
   tagsLine.className = 'book-tags-line';
   const allTags = [...book.customTags, ...book.tags];
-  allTags.forEach(t => tagsLine.appendChild(makeTag(t)));
+  allTags.forEach(t => tagsLine.appendChild(makeTag(t, '', filterByTag)));
 
   // Line 3–5: description (3 lines max via CSS clamp)
   const desc = document.createElement('div');
@@ -274,11 +310,49 @@ function makeBookRow(book) {
   return row;
 }
 
-function makeTag(text, cls) {
+// Rating tag detection for highlighting
+const RATING_TAG_PATTERNS = [
+  { pattern: 'explicit',          cls: 'tag-rating-explicit' },
+  { pattern: 'mature',            cls: 'tag-rating-mature'   },
+  { pattern: 'teen and up',       cls: 'tag-rating-teen'     },
+  { pattern: 'general audiences', cls: 'tag-rating-general'  },
+  { pattern: 'not rated',         cls: 'tag-rating-unrated'  },
+];
+
+function ratingClass(text) {
+  const tl = text.toLowerCase();
+  for (const { pattern, cls } of RATING_TAG_PATTERNS) {
+    if (tl.includes(pattern)) return cls;
+  }
+  return null;
+}
+
+function makeTag(text, cls, onClick) {
   const t = document.createElement('span');
-  t.className = 'tag' + (cls ? ' ' + cls : '');
+  const rCls = ratingClass(text);
+  t.className = 'tag' + (cls ? ' ' + cls : '') + (rCls ? ' ' + rCls : '');
   t.textContent = text;
+  if (onClick) {
+    t.classList.add('tag-clickable');
+    t.addEventListener('click', function(e) { e.stopPropagation(); onClick(text); });
+  }
   return t;
+}
+
+// ── Tag filter ─────────────────────────────────────────────────────────────
+function filterByTag(tag) {
+  const searchInput = document.getElementById('search-input');
+  const searchClear = document.getElementById('search-clear');
+  searchInput.value = tag;
+  state.search = tag;
+  searchClear.classList.add('visible');
+  state.filter = 'all';
+  document.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
+  document.querySelector('.pill[data-filter="all"]').classList.add('active');
+  recomputeVisible();
+  vsLastStart = -1;
+  switchView('library');
+  renderAll();
 }
 
 // ── Detail panel ───────────────────────────────────────────────────────────
@@ -409,7 +483,7 @@ function renderStats() {
 // ── Rankings ───────────────────────────────────────────────────────────────
 function renderRankings() {
   const readBooks = state.calibreBooks
-    .filter(b => getUser(b.id).read)
+    .filter(b => getUser(b.id).read && bookPassesRatingFilter(b))
     .map(b => mergedBook(b))
     .sort((a, b) => b.elo - a.elo);
 
@@ -542,7 +616,7 @@ function renderRankings() {
 let rankPair = null;
 
 function updateRankPair() {
-  const readBooks = state.calibreBooks.filter(b => getUser(b.id).read);
+  const readBooks = state.calibreBooks.filter(b => getUser(b.id).read && bookPassesRatingFilter(b));
   const empty   = document.getElementById('rank-empty');
   const pair    = document.getElementById('rank-pair');
   const actions = document.getElementById('rank-actions');
@@ -556,7 +630,7 @@ function updateRankPair() {
 }
 
 function pickNewPair(readBooks) {
-  if (!readBooks) readBooks = state.calibreBooks.filter(b => getUser(b.id).read);
+  if (!readBooks) readBooks = state.calibreBooks.filter(b => getUser(b.id).read && bookPassesRatingFilter(b));
   if (readBooks.length < 2) return;
 
   const sorted = [...readBooks].sort((a, b) => getUser(a.id).matchCount - getUser(b.id).matchCount);
@@ -573,25 +647,65 @@ function pickNewPair(readBooks) {
 function fillRankCard(elId, book) {
   const el = document.getElementById(elId);
   el.dataset.id = book.id;
-  const desc = book.description
-    ? escHtml(book.description.slice(0, 220)) + (book.description.length > 220 ? '…' : '')
-    : '';
-  el.innerHTML =
-    '<div class="rank-card-title">' + escHtml(book.title) + '</div>' +
-    '<div class="rank-card-author">' + escHtml(book.author) + '</div>' +
-    (book.fandom ? '<div class="tag" style="width:fit-content">' + escHtml(book.fandom) + '</div>' : '') +
-    '<div class="rank-card-desc">' + desc + '</div>' +
-    '<div class="rank-card-elo">ELO ' + book.elo + ' · ' + book.matchCount + ' matches</div>';
+  el.innerHTML = '';
+
+  const title = document.createElement('div');
+  title.className = 'rank-card-title';
+  title.textContent = book.title;
+
+  const author = document.createElement('div');
+  author.className = 'rank-card-author';
+  author.textContent = book.author;
+
+  const tagsEl = document.createElement('div');
+  tagsEl.className = 'sort-card-tags';
+  [...(book.customTags || []), ...(book.tags || [])].forEach(t => tagsEl.appendChild(makeTag(t)));
+
+  const divider = document.createElement('div');
+  divider.className = 'sort-card-divider';
+
+  const desc = document.createElement('div');
+  desc.className = 'sort-card-desc';
+  desc.textContent = book.description || '';
+
+  const divider2 = document.createElement('div');
+  divider2.className = 'sort-card-divider';
+
+  const sampleEl = document.createElement('div');
+  sampleEl.className = 'sort-card-sample';
+  sampleEl.textContent = book.epubPath ? 'Loading sample…' : '';
+
+  const eloEl = document.createElement('div');
+  eloEl.className = 'rank-card-elo';
+  eloEl.textContent = 'ELO ' + book.elo + ' · ' + book.matchCount + ' matches';
+
+  const children = [title, author];
+  if (book.tags.length || book.customTags.length) children.push(tagsEl);
+  if (book.description) children.push(divider, desc);
+  children.push(divider2, sampleEl, eloEl);
+  children.forEach(c => el.appendChild(c));
 
   if (book.epubPath) {
     const btn = document.createElement('button');
     btn.className = 'ghost-btn rank-card-open-btn';
     btn.textContent = 'Open in reader';
     btn.addEventListener('click', e => {
-      e.stopPropagation();   // don't trigger the "pick winner" card click
+      e.stopPropagation();
       window.api.openEpub(book.epubPath);
     });
     el.appendChild(btn);
+
+    window.api.epubSample(book.epubPath).then(sample => {
+      sampleEl.innerHTML = '';
+      if (!sample) { sampleEl.textContent = '(no readable sample found)'; return; }
+      sample.split(/\n+/).forEach(para => {
+        const p = document.createElement('p');
+        p.textContent = para.trim();
+        if (p.textContent) sampleEl.appendChild(p);
+      });
+    });
+  } else {
+    sampleEl.textContent = '(no epub file)';
   }
 }
 
@@ -625,11 +739,23 @@ function revertMatch(index) {
   const entry = matchHistory[index];
   if (!entry) return;
 
-  // Restore ELO to pre-match values and decrement matchCounts
-  const uW = getUser(entry.winnerId);
-  const uL = getUser(entry.loserId);
-  uW.elo = entry.winnerEloBefore; if (uW.matchCount > 0) uW.matchCount--;
-  uL.elo = entry.loserEloBefore;  if (uL.matchCount > 0) uL.matchCount--;
+  if (entry.type === 'triage') {
+    // Undo triage decision
+    const u = getUser(entry.bookId);
+    if (entry.action === 'read') {
+      u.read = false;
+    } else if (entry.action === 'later') {
+      u.customTags = u.customTags.filter(t => t !== 'later');
+    } else if (entry.action === 'rejected') {
+      u.customTags = u.customTags.filter(t => t !== 'rejected');
+    }
+  } else {
+    // Undo ELO match
+    const uW = getUser(entry.winnerId);
+    const uL = getUser(entry.loserId);
+    uW.elo = entry.winnerEloBefore; if (uW.matchCount > 0) uW.matchCount--;
+    uL.elo = entry.loserEloBefore;  if (uL.matchCount > 0) uL.matchCount--;
+  }
 
   matchHistory.splice(index, 1);
   scheduleSave();
@@ -646,12 +772,11 @@ function renderHistory() {
   }
   empty.classList.remove('visible');
 
+  const ACTION_LABEL = { read: 'Read', later: 'Later', rejected: 'Rejected' };
+  const ACTION_CLS   = { read: 'win',  later: 'later', rejected: 'loss' };
+
   const frag = document.createDocumentFragment();
   matchHistory.forEach((entry, i) => {
-    const winner = state.bookMap[entry.winnerId];
-    const loser  = state.bookMap[entry.loserId];
-    if (!winner || !loser) return;
-
     const row = document.createElement('div');
     row.className = 'history-row';
 
@@ -659,21 +784,41 @@ function renderHistory() {
     const timeStr = when.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) +
                     ' ' + when.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 
-    row.innerHTML =
-      '<div class="history-time">' + escHtml(timeStr) + '</div>' +
-      '<div class="history-pair">' +
-        '<div class="history-winner">' +
-          '<span class="history-badge win">W</span>' +
-          '<span class="history-book-title">' + escHtml(winner.title) + '</span>' +
-          '<span class="history-elo-change">' + entry.winnerEloBefore + ' → ' + entry.winnerEloAfter + '</span>' +
+    if (entry.type === 'triage') {
+      const book = state.bookMap[entry.bookId];
+      if (!book) return;
+      const cls = ACTION_CLS[entry.action] || '';
+      const lbl = ACTION_LABEL[entry.action] || entry.action;
+      row.innerHTML =
+        '<div class="history-time">' + escHtml(timeStr) + '</div>' +
+        '<div class="history-pair">' +
+          '<div class="history-winner">' +
+            '<span class="history-badge ' + cls + '">' + lbl + '</span>' +
+            '<span class="history-book-title">' + escHtml(book.title) + '</span>' +
+            '<span class="history-elo-change" style="color:var(--dim)">triage</span>' +
+          '</div>' +
         '</div>' +
-        '<div class="history-loser">' +
-          '<span class="history-badge loss">L</span>' +
-          '<span class="history-book-title">' + escHtml(loser.title) + '</span>' +
-          '<span class="history-elo-change">' + entry.loserEloBefore + ' → ' + entry.loserEloAfter + '</span>' +
+        '<button class="history-revert ghost-btn">Revert</button>';
+    } else {
+      const winner = state.bookMap[entry.winnerId];
+      const loser  = state.bookMap[entry.loserId];
+      if (!winner || !loser) return;
+      row.innerHTML =
+        '<div class="history-time">' + escHtml(timeStr) + '</div>' +
+        '<div class="history-pair">' +
+          '<div class="history-winner">' +
+            '<span class="history-badge win">W</span>' +
+            '<span class="history-book-title">' + escHtml(winner.title) + '</span>' +
+            '<span class="history-elo-change">' + entry.winnerEloBefore + ' → ' + entry.winnerEloAfter + '</span>' +
+          '</div>' +
+          '<div class="history-loser">' +
+            '<span class="history-badge loss">L</span>' +
+            '<span class="history-book-title">' + escHtml(loser.title) + '</span>' +
+            '<span class="history-elo-change">' + entry.loserEloBefore + ' → ' + entry.loserEloAfter + '</span>' +
+          '</div>' +
         '</div>' +
-      '</div>' +
-      '<button class="history-revert ghost-btn" data-i="' + i + '">Revert</button>';
+        '<button class="history-revert ghost-btn">Revert</button>';
+    }
 
     row.querySelector('.history-revert').addEventListener('click', () => revertMatch(i));
     frag.appendChild(row);
@@ -695,7 +840,7 @@ const sortState = {
 function initSortQueue() {
   // Queue = all unread, non-series books, shuffled
   sortState.queue = state.calibreBooks
-    .filter(b => !getUser(b.id).read && !b.series)
+    .filter(b => !getUser(b.id).read && !b.series && bookPassesRatingFilter(b))
     .map(b => b.id);
   for (let i = sortState.queue.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -773,10 +918,28 @@ function advanceSortCard(animate, direction) {
   }
 }
 
-function renderSortCard(id) {
+// Triage session timing — reset when sort view is first opened each session
+const triageSession = {
+  startTime:  null,   // Date.now() when this session started
+  countStart: 0,      // triaged count at session start (to compute pace)
+};
+
+function triageCount() {
+  // Total decisions made = read + tagged-later + tagged-rejected
+  let n = 0;
+  for (const id in state.userBooks) {
+    const u = state.userBooks[id];
+    if (u.read) n++;
+    else if (u.customTags && (u.customTags.includes('later') || u.customTags.includes('rejected'))) n++;
+  }
+  return n;
+}
+
+async function renderSortCard(id) {
   const book = mergedBook(state.bookMap[id]);
   const card = document.getElementById('sort-card');
 
+  // Build card synchronously first so it appears immediately
   const title = document.createElement('div');
   title.className = 'sort-card-title';
   title.textContent = book.title;
@@ -785,15 +948,9 @@ function renderSortCard(id) {
   author.className = 'sort-card-author';
   author.textContent = book.author;
 
-  const series = document.createElement('div');
-  series.className = 'sort-card-series';
-  series.textContent = book.series
-    ? book.series + (book.seriesIndex != null ? ' #' + book.seriesIndex : '')
-    : '';
-
-  const tags = document.createElement('div');
-  tags.className = 'sort-card-tags';
-  [...(book.customTags || []), ...(book.tags || [])].forEach(t => tags.appendChild(makeTag(t)));
+  const tagsEl = document.createElement('div');
+  tagsEl.className = 'sort-card-tags';
+  [...(book.customTags || []), ...(book.tags || [])].forEach(t => tagsEl.appendChild(makeTag(t)));
 
   const divider = document.createElement('div');
   divider.className = 'sort-card-divider';
@@ -802,11 +959,15 @@ function renderSortCard(id) {
   desc.className = 'sort-card-desc';
   desc.textContent = book.description || '';
 
+  // Sample placeholder — filled async below
+  const sampleEl = document.createElement('div');
+  sampleEl.className = 'sort-card-sample';
+  sampleEl.textContent = book.epubPath ? 'Loading sample…' : '';
+
   const pub = document.createElement('div');
   pub.className = 'sort-card-publisher';
   pub.textContent = book.publisher || '';
 
-  // Zone labels (shown on hover via CSS)
   const labelLeft = document.createElement('div');
   labelLeft.className = 'sort-zone-label left';
   labelLeft.textContent = '← skip';
@@ -817,14 +978,14 @@ function renderSortCard(id) {
 
   card.innerHTML = '';
   const children = [title, author];
-  if (book.series) children.push(series);
-  if (book.tags.length || book.customTags.length) children.push(tags);
-  children.push(divider, desc);
+  if (book.tags.length || book.customTags.length) children.push(tagsEl);
+  if (book.description) children.push(divider, desc);
+  children.push(divider.cloneNode(), sampleEl);
   if (book.publisher) children.push(pub);
   children.push(labelLeft, labelRight);
   children.forEach(c => card.appendChild(c));
 
-  // Two "Open in reader" buttons below card — rendered outside the card itself
+  // Open-in-reader button
   const btnWrap = document.getElementById('sort-open-btns');
   btnWrap.innerHTML = '';
   if (book.epubPath) {
@@ -834,46 +995,118 @@ function renderSortCard(id) {
     b1.addEventListener('click', () => window.api.openEpub(book.epubPath));
     btnWrap.appendChild(b1);
   }
+
+  // Async: fetch epub sample and fill in
+  if (book.epubPath) {
+    window.api.epubSample(book.epubPath).then(sample => {
+      if (sortState.current !== id) return;
+      sampleEl.innerHTML = '';
+      if (!sample) {
+        sampleEl.textContent = '(no readable sample found)';
+        return;
+      }
+      // Split on one or more newlines, render each non-empty chunk as a <p>
+      sample.split(/\n+/).forEach(para => {
+        const p = document.createElement('p');
+        p.textContent = para.trim();
+        if (p.textContent) sampleEl.appendChild(p);
+      });
+    });
+  } else {
+    sampleEl.textContent = '(no epub file)';
+  }
 }
 
 function updateSortProgress() {
-  const total   = state.calibreBooks.filter(b => !getUser(b.id).read).length +
-                  Object.values(state.userBooks).filter(u => u.read).length;
-  const done    = Object.values(state.userBooks).filter(u => u.read).length;
+  let readCount = 0, laterCount = 0, rejectedCount = 0;
+  for (const id in state.userBooks) {
+    const u = state.userBooks[id];
+    if (u.read) { readCount++; continue; }
+    if (u.customTags) {
+      if (u.customTags.includes('later'))    laterCount++;
+      if (u.customTags.includes('rejected')) rejectedCount++;
+    }
+  }
+
   const remaining = sortState.queue.length + (sortState.current ? 1 : 0);
-  document.getElementById('sort-progress').textContent =
-    remaining > 0
-      ? remaining.toLocaleString() + ' books remaining · ' + done.toLocaleString() + ' marked read'
-      : done.toLocaleString() + ' books marked read';
+
+  // Session pace
+  const now = Date.now();
+  let paceStr = '—', etaStr = '—', todayStr = '—';
+
+  if (triageSession.startTime) {
+    const elapsed = (now - triageSession.startTime) / 1000 / 3600; // hours
+    const sessionDone = triageCount() - triageSession.countStart;
+
+    if (elapsed > 0.005 && sessionDone > 0) {
+      const perHour = Math.round(sessionDone / elapsed);
+      paceStr = perHour.toLocaleString();
+      if (remaining > 0 && perHour > 0) {
+        const hrsLeft = remaining / perHour;
+        if (hrsLeft < 1)      etaStr = Math.round(hrsLeft * 60) + 'm';
+        else if (hrsLeft < 24) etaStr = hrsLeft.toFixed(1) + 'h';
+        else                   etaStr = Math.round(hrsLeft / 24) + 'd';
+      }
+    }
+
+    // Today: decisions since midnight
+    const midnight = new Date(); midnight.setHours(0,0,0,0);
+    todayStr = (triageSession.startTime >= midnight.getTime()
+      ? sessionDone
+      : '—'
+    ).toString();
+  }
+
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+  set('ss-remaining', remaining.toLocaleString());
+  set('ss-read',      readCount.toLocaleString());
+  set('ss-later',     laterCount.toLocaleString());
+  set('ss-rejected',  rejectedCount.toLocaleString());
+  set('ss-today',     todayStr);
+  set('ss-pace',      paceStr);
+  set('ss-eta',       etaStr);
 }
 
-function sortDecide(direction) {
+function sortDecide(action) {
+  // action: 'skip' | 'read' | 'later' | 'rejected'
   if (sortState.animating || !sortState.current) return;
   const id = sortState.current;
+  const u  = getUser(id);
 
-  if (direction === 'right') {
-    // Mark as read
-    getUser(id).read = true;
+  if (action === 'read') {
+    u.read = true;
+    u.customTags = u.customTags.filter(t => t !== 'later' && t !== 'rejected');
+  } else if (action === 'later') {
+    if (!u.customTags.includes('later')) u.customTags.push('later');
+    u.customTags = u.customTags.filter(t => t !== 'rejected');
+  } else if (action === 'rejected') {
+    if (!u.customTags.includes('rejected')) u.customTags.push('rejected');
+    u.customTags = u.customTags.filter(t => t !== 'later');
+  }
+  // 'skip' = no change
+
+  if (action !== 'skip') {
+    // Record triage decision in history so it can be reverted
+    matchHistory.unshift({ type: 'triage', bookId: id, action, ts: Date.now() });
     scheduleSave();
     renderStats();
+    if (document.getElementById('view-history').classList.contains('active')) renderHistory();
   }
-  // left = skip, stays unread, just advance
 
+  const direction = (action === 'read') ? 'right' : 'left';
   advanceSortCard(true, direction);
 }
 
 function attachSortEvents() {
   const card = document.getElementById('sort-card');
 
-  // Click: left half = skip, right half = read
   card.addEventListener('click', function(e) {
     if (sortState.animating) return;
     const rect = card.getBoundingClientRect();
     const mid  = rect.left + rect.width / 2;
-    sortDecide(e.clientX < mid ? 'left' : 'right');
+    sortDecide(e.clientX < mid ? 'skip' : 'read');
   });
 
-  // Hover: show hint based on cursor side
   card.addEventListener('mousemove', function(e) {
     if (sortState.animating) return;
     const rect = card.getBoundingClientRect();
@@ -886,14 +1119,22 @@ function attachSortEvents() {
     card.classList.remove('hint-left', 'hint-right');
   });
 
-  // Keyboard: ← skip, → read
   document.addEventListener('keydown', function(e) {
     if (!document.getElementById('view-sort').classList.contains('active')) return;
-    if (e.key === 'ArrowLeft')  sortDecide('left');
-    if (e.key === 'ArrowRight') sortDecide('right');
+    // Don't fire if user is typing in an input
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'Enter'  || e.key === 'ArrowRight') { e.preventDefault(); sortDecide('read');     return; }
+    if (e.key === ' '      || e.key === 'ArrowLeft')  { e.preventDefault(); sortDecide('skip');     return; }
+    if (e.key === 'l' || e.key === 'L')               { e.preventDefault(); sortDecide('later');    return; }
+    if (e.key === 'x' || e.key === 'X')               { e.preventDefault(); sortDecide('rejected'); return; }
   });
 
+  document.getElementById('btn-sort-later').addEventListener('click',  () => sortDecide('later'));
+  document.getElementById('btn-sort-reject').addEventListener('click', () => sortDecide('rejected'));
+
   document.getElementById('btn-sort-restart').addEventListener('click', function() {
+    triageSession.startTime  = Date.now();
+    triageSession.countStart = triageCount();
     initSortQueue();
     showSortView();
   });
@@ -908,8 +1149,22 @@ function switchView(name) {
   if (name === 'rank')     pickNewPair();
   if (name === 'rankings') renderRankings();
   if (name === 'library')  vsRender();
-  if (name === 'sort')     showSortView();
+  if (name === 'sort') {
+    if (!triageSession.startTime) {
+      triageSession.startTime  = Date.now();
+      triageSession.countStart = triageCount();
+    }
+    showSortView();
+  }
   if (name === 'history')  renderHistory();
+  if (name === 'settings') renderSettings();
+}
+
+// ── Settings view ──────────────────────────────────────────────────────────
+function renderSettings() {
+  // Sync radio buttons to current settings value
+  const radios = document.querySelectorAll('input[name="max-rating"]');
+  radios.forEach(r => { r.checked = (r.value === settings.maxRating); });
 }
 
 // ── Debounce ───────────────────────────────────────────────────────────────
@@ -1009,6 +1264,18 @@ function attachEvents() {
     if (e.key === 'f' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault(); searchInput.focus();
     }
+  });
+
+  // Settings: max rating radio buttons
+  document.querySelectorAll('input[name="max-rating"]').forEach(radio => {
+    radio.addEventListener('change', function() {
+      if (!this.checked) return;
+      settings.maxRating = this.value;
+      scheduleSave();
+      recomputeVisible();
+      vsLastStart = -1;
+      renderAll();
+    });
   });
 }
 

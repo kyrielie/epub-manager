@@ -184,6 +184,58 @@ ipcMain.handle('open-epub', async (_, epubPath) => {
   return false;
 });
 
+ipcMain.handle('epub-sample', async (_, epubPath) => {
+  if (!epubPath || !fs.existsSync(epubPath)) return null;
+  try {
+    // EPUBs are zips — find the 2nd content HTML document and extract plain text
+    const AdmZip = require('adm-zip');
+    const zip = new AdmZip(epubPath);
+    const entries = zip.getEntries()
+      .filter(e => {
+        const n = e.entryName.toLowerCase();
+        return (n.endsWith('.html') || n.endsWith('.xhtml') || n.endsWith('.htm')) &&
+               !n.includes('toc') && !n.includes('nav') && !n.includes('cover');
+      })
+      .sort((a, b) => a.entryName.localeCompare(b.entryName));
+
+    // Skip the first two entries (title/cover page, chapter header), use the third
+    const entry = entries[2] || entries[1] || entries[0];
+    if (!entry) return null;
+
+    const html = zip.readAsText(entry);
+    // Strip all tags, decode common entities, preserve paragraph breaks
+    const text = html
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<\/(p|div|br|li|h[1-6])[^>]*>/gi, '\n')   // block-level closes → newline
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#\d+;/g, '')
+      .replace(/[^\S\n]+/g, ' ')          // collapse spaces/tabs but keep newlines
+      .replace(/\n{3,}/g, '\n\n')         // max two consecutive newlines
+      .trim();
+
+    // Drop first 4 non-empty lines (usually repeated title/chapter heading)
+    const lines = text.split('\n');
+    let skipped = 0;
+    const trimmed = [];
+    for (const line of lines) {
+      if (skipped < 4 && line.trim()) { skipped++; continue; }
+      trimmed.push(line);
+    }
+    const result = trimmed.join('\n').replace(/^\n+/, '').trim();
+
+    return result.length > 800 ? result.slice(0, 800) + '…' : result;
+  } catch (e) {
+    return null;
+  }
+});
+
 ipcMain.handle('cover-data-url', async (_, coverPath) => {
   try {
     if (coverPath && fs.existsSync(coverPath)) {

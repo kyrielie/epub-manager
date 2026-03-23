@@ -9,4 +9,5 @@ contextBridge.exposeInMainWorld('api', {
   saveAppData:    (data)        => ipcRenderer.invoke('save-app-data', data),
   openEpub:       (path)        => ipcRenderer.invoke('open-epub', path),
   coverDataUrl:   (path)        => ipcRenderer.invoke('cover-data-url', path),
+  epubSample:     (path)        => ipcRenderer.invoke('epub-sample', path),
 });
