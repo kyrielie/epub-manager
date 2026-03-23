@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:;"/>
+  <title>EPUB Manager</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist+Mono:wght@400;500&family=Geist:wght@300;400;500&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+
+<!-- ── Sidebar ───────────────────────────────────────────────────────────── -->
+<aside id="sidebar">
+  <div id="sidebar-top">
+    <div id="logo">
+      <span class="logo-em">epub</span>
+      <span class="logo-light">mgr</span>
+    </div>
+    <nav>
+      <button class="nav-btn active" data-view="library">
+        <svg viewBox="0 0 20 20"><path d="M4 3h2v14H4V3zm4 0h1v14H8V3zm3 0h2l3 14h-2L11 3z" fill="currentColor"/></svg>
+        Library
+      </button>
+      <button class="nav-btn" data-view="rank">
+        <svg viewBox="0 0 20 20"><path d="M10 2l2.4 4.8 5.3.8-3.85 3.75.91 5.3L10 14.1l-4.76 2.55.91-5.3L2.3 7.6l5.3-.8L10 2z" fill="currentColor"/></svg>
+        Compare
+      </button>
+      <button class="nav-btn" data-view="rankings">
+        <svg viewBox="0 0 20 20"><path d="M3 14h2v3H3v-3zm4-4h2v7H7v-7zm4-4h2v11h-2V6zm4-3h2v14h-2V3z" fill="currentColor"/></svg>
+        Rankings
+      </button>
+      <button class="nav-btn" data-view="sort">
+        <svg viewBox="0 0 20 20"><path d="M3 5h14M3 10h9M3 15h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/><path d="M16 12l2 2-2 2M18 14h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
+        Sort
+      </button>
+      <button class="nav-btn" data-view="history">
+        <svg viewBox="0 0 20 20"><path d="M10 4v6l4 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/><path d="M3.5 10a6.5 6.5 0 1 1 1.1 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/><path d="M3.5 6v4h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
+        History
+      </button>
+    </nav>
+  </div>
+
+  <div id="sidebar-bottom">
+    <div id="stats-panel">
+      <div class="stat"><span class="stat-n" id="stat-total">0</span><span class="stat-l">books</span></div>
+      <div class="stat"><span class="stat-n" id="stat-read">0</span><span class="stat-l">read</span></div>
+      <div class="stat"><span class="stat-n" id="stat-ranked">0</span><span class="stat-l">ranked</span></div>
+    </div>
+    <button id="btn-open-library" class="action-btn">
+      <svg viewBox="0 0 20 20"><path d="M2 5a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5z" fill="currentColor"/></svg>
+      Open library
+    </button>
+  </div>
+</aside>
+
+<!-- ── Main content ───────────────────────────────────────────────────────── -->
+<main id="main">
+
+  <!-- Library view -->
+  <div id="view-library" class="view active">
+    <header class="view-header">
+      <div id="search-wrap">
+        <svg class="search-icon" viewBox="0 0 20 20">
+          <circle cx="9" cy="9" r="5.5" stroke="currentColor" stroke-width="1.5" fill="none"/>
+          <line x1="13.5" y1="13.5" x2="18" y2="18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input id="search-input" type="text" placeholder="Search title, author, fandom, tag…" autocomplete="off"/>
+        <button id="search-clear" title="Clear">✕</button>
+      </div>
+      <div id="filter-bar">
+        <button class="pill active" data-filter="all">All</button>
+        <button class="pill" data-filter="read">Read</button>
+        <button class="pill" data-filter="unread">Unread</button>
+      </div>
+      <div id="sort-wrap">
+        <select id="sort-select">
+          <option value="title">Title A–Z</option>
+          <option value="author">Author A–Z</option>
+          <option value="elo">ELO ↓</option>
+        </select>
+      </div>
+    </header>
+
+    <div id="book-count-bar"><span id="book-count-label"></span></div>
+
+    <div id="book-list"></div>
+
+    <div id="empty-state">
+      <div class="empty-icon">📚</div>
+      <p>Open a Calibre library to get started</p>
+      <button class="action-btn" id="btn-open-library-empty">Open library folder</button>
+    </div>
+  </div>
+
+  <!-- Compare / ELO view -->
+  <div id="view-rank" class="view">
+    <div id="rank-header">
+      <h2>Which did you enjoy more?</h2>
+      <p class="rank-sub">Click the book you preferred. ELO updates after every pick.</p>
+    </div>
+    <div id="rank-pair">
+      <div class="rank-card" id="rank-a" data-id=""></div>
+      <div class="rank-vs">vs</div>
+      <div class="rank-card" id="rank-b" data-id=""></div>
+    </div>
+    <div id="rank-actions">
+      <button id="btn-skip" class="ghost-btn">Skip this pair</button>
+      <button id="btn-go-rankings" class="action-btn">View rankings →</button>
+    </div>
+    <div id="rank-empty">
+      <p>Mark at least 2 books as read to start comparing.</p>
+    </div>
+  </div>
+
+  <!-- Rankings view -->
+  <div id="view-rankings" class="view">
+    <header class="view-header">
+      <h2 style="font-family:'Instrument Serif',serif;font-weight:400;font-size:1.6rem;margin:0;">Rankings</h2>
+      <p style="color:var(--muted);font-size:.8rem;margin:.25rem 0 0;">Ranked by ELO · higher = better</p>
+    </header>
+    <div id="rankings-list"></div>
+    <div id="rankings-empty">
+      <p>Run some comparisons to build your rankings.</p>
+    </div>
+  </div>
+
+  <!-- Sort / triage view -->
+  <div id="view-sort" class="view">
+    <div id="sort-view-header">
+      <p id="sort-progress"></p>
+    </div>
+    <div id="sort-arena">
+      <div id="sort-hint-left" class="sort-hint">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M19 12H5M5 12l7-7M5 12l7 7"/></svg>
+        <span>Skip · unread</span>
+      </div>
+      <div id="sort-card-wrap">
+        <div id="sort-card"></div>
+      </div>
+      <div id="sort-hint-right" class="sort-hint">
+        <span>Mark read</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M5 12h14M14 5l7 7-7 7"/></svg>
+      </div>
+    </div>
+    <div id="sort-open-btns"></div>
+    <div id="sort-empty">
+      <div class="empty-icon">✓</div>
+      <p>All books sorted! Open the library to review.</p>
+      <button class="action-btn" id="btn-sort-restart" style="max-width:200px;margin-top:.5rem">Start over</button>
+    </div>
+    <div id="sort-no-books">
+      <div class="empty-icon">📚</div>
+      <p>Load a library first.</p>
+    </div>
+  </div>
+
+  <!-- History view -->
+  <div id="view-history" class="view">
+    <header class="view-header">
+      <h2 style="font-family:'Instrument Serif',serif;font-weight:400;font-size:1.6rem;margin:0;">Match history</h2>
+      <p style="color:var(--muted);font-size:.8rem;margin:.25rem 0 0;">Most recent first · click Revert to undo a result</p>
+    </header>
+    <div id="history-list"></div>
+    <div id="history-empty"><p>No matches recorded yet.</p></div>
+  </div>
+
+</main>
+
+<!-- ── Book detail panel ──────────────────────────────────────────────────── -->
+<div id="detail-overlay"></div>
+<div id="detail-panel">
+  <button id="detail-close">✕</button>
+  <div id="detail-body">
+    <div id="detail-badges"></div>
+    <h1 id="detail-title"></h1>
+    <p id="detail-author"></p>
+    <p id="detail-series"></p>
+    <p id="detail-desc"></p>
+
+    <div class="detail-section">
+      <div class="detail-section-label">EPUB tags from Calibre</div>
+      <div id="detail-epub-tags" class="tag-row"></div>
+    </div>
+
+    <div class="detail-section" id="custom-tag-section">
+      <div class="detail-section-label">Your tags</div>
+      <div id="detail-custom-tags" class="tag-row"></div>
+      <div id="tag-input-row">
+        <input id="tag-input" type="text" placeholder="Add tag…" autocomplete="off"/>
+        <button id="tag-add-btn">Add</button>
+      </div>
+    </div>
+
+    <div id="detail-actions">
+      <button id="btn-toggle-read" class="action-btn"></button>
+      <button id="btn-open-epub" class="ghost-btn">Open in reader</button>
+    </div>
+
+    <div id="detail-elo-row">
+      <span class="detail-section-label">ELO</span>
+      <span id="detail-elo-val"></span>
+      <span class="detail-section-label" style="margin-left:.5rem" id="detail-matches"></span>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
