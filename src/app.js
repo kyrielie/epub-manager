@@ -196,11 +196,16 @@ function bookPassesContentFilter(book) {
 
   // Fandom — applies to ALL books (not just AO3).
   // A book is hidden when every one of its detected fandoms is toggled off.
-  // Books whose tags match no known fandom are never hidden by fandom filters.
+  // Books with no detected fandom can be hidden via the 'unknown-fandom' key.
   const anyFandomHidden = Object.keys(settings.hiddenFilters).some(k => allFandoms().includes(k));
-  if (anyFandomHidden) {
+  const unknownFandomHidden = isHidden('unknown-fandom');
+  if (anyFandomHidden || unknownFandomHidden) {
     const fandoms = detectFandoms(book);
-    if (fandoms.length > 0 && fandoms.every(f => isHidden(f))) return false;
+    if (fandoms.length === 0) {
+      if (unknownFandomHidden) return false;
+    } else if (anyFandomHidden && fandoms.every(f => isHidden(f))) {
+      return false;
+    }
   }
 
   return true;
@@ -434,33 +439,27 @@ function makeBookRow(book) {
   });
   titleLine.append(titleSpan, bySpan, authorSpan);
 
-  // Line 2: fandom + relationship (AO3 only, separate line)
+  // Line 2: fandom tags + relationship — all books, always above the tags line
   const fandomLine = document.createElement('div');
   fandomLine.className = 'book-fandom-line';
-  const bookFandomSet = new Set();
-  if (isAo3Book(book)) {
-    if (!isHidden('showFandom')) {
-      const bookFandoms = detectFandoms(book);
-      const fs = fandomTagSet(book);
-      fs.forEach(t => bookFandomSet.add(t));
-      bookFandoms.forEach(f => fandomLine.appendChild(makeTag(f, 'tag-fandom', filterByTag)));
-    }
-    const rel = detectRelationship(book);
-    if (rel) fandomLine.appendChild(makeTag(rel, 'tag-rel'));
-  }
+  const bookFandomSet = fandomTagSet(book); // raw tag strings that matched a fandom
+  const bookFandoms   = detectFandoms(book);
+  bookFandoms.forEach(f => fandomLine.appendChild(makeTag(f, 'tag-fandom', filterByTag)));
+  const rel = detectRelationship(book);
+  if (rel) fandomLine.appendChild(makeTag(rel, 'tag-rel'));
 
-  // Line 3: tags (excluding fandom-matched ones)
+  // Line 3: remaining tags (exclude any raw tags already surfaced as fandom tags)
   const tagsLine = document.createElement('div');
   tagsLine.className = 'book-tags-line';
   const allTags = [...book.customTags, ...book.tags].filter(t => !bookFandomSet.has(t));
   allTags.forEach(t => tagsLine.appendChild(makeTag(t, '', filterByTag)));
 
-  // Line 3–5: description (3 lines max via CSS clamp)
+  // Description (CSS-clamped)
   const desc = document.createElement('div');
   desc.className = 'book-desc';
   desc.textContent = book.description || '';
 
-  // Line 6: publisher (settings-controlled)
+  // Publisher
   const pub = document.createElement('div');
   pub.className = 'book-publisher';
   pub.textContent = (settings.showPublisherTag !== false) ? (book.publisher || '') : '';
@@ -893,16 +892,14 @@ function buildCardContent(el, book, opts) {
   author.className = 'rank-card-author';
   author.textContent = book.author;
 
-  // Fandom row — separate line, only for AO3 books
-  const fandoms   = isAo3Book(book) ? detectFandoms(book) : [];
-  const fandomSet = isAo3Book(book) ? fandomTagSet(book)  : new Set();
-  const rel       = isAo3Book(book) ? detectRelationship(book) : null;
+  // Fandom row — all books, always shown above the generic tags row
+  const fandoms   = detectFandoms(book);
+  const fandomSet = fandomTagSet(book);
+  const rel       = detectRelationship(book);
 
   const metaRow = document.createElement('div');
   metaRow.className = 'card-meta-row';
-  if (!isHidden('showFandom')) {
-    fandoms.forEach(f => metaRow.appendChild(makeTag(f, 'tag-fandom', filterByTag)));
-  }
+  fandoms.forEach(f => metaRow.appendChild(makeTag(f, 'tag-fandom', filterByTag)));
   if (rel) metaRow.appendChild(makeTag(rel, 'tag-rel'));
 
   // Generic tags row — exclude tags already shown as fandoms
@@ -1142,21 +1139,18 @@ function recordWin(winnerId) {
       const aEl = document.getElementById('rank-a');
       const bEl = document.getElementById('rank-b');
 
-      // Force reflow so the browser registers the cleared animation state,
-      // then defer adding anim-rise to the next frame so the translateY(100%)
-      // start keyframe is guaranteed to be painted before the animation runs.
+      // Force reflow so the animation starts from the initial state
       void aEl.offsetWidth;
       void bEl.offsetWidth;
 
-      requestAnimationFrame(() => {
-        aEl.classList.add('anim-rise');
-        bEl.classList.add('anim-rise');
+      // Rise up animation
+      aEl.classList.add('anim-rise');
+      bEl.classList.add('anim-rise');
 
-        setTimeout(() => {
-          aEl.classList.remove('anim-rise');
-          bEl.classList.remove('anim-rise');
-        }, 400);
-      });
+      setTimeout(() => {
+        aEl.classList.remove('anim-rise');
+        bEl.classList.remove('anim-rise');
+      }, 400);
     } else {
       rankPair = null;
     }
@@ -1699,7 +1693,11 @@ function renderSettings() {
   if (publisherRows.length) body.appendChild(makeSection('Publisher', publisherRows));
 
   // ── Fandom ────────────────────────────────────────────────────────────────
-  const fandomRows = allFandoms().map(f => makeToggleRow(f, f, 'tag-fandom'));
+  // "Unknown fandom" catches books whose tags match no entry in the fandom list
+  const fandomRows = [
+    makeToggleRow('Unknown fandom', 'unknown-fandom', ''),
+    ...allFandoms().map(f => makeToggleRow(f, f, 'tag-fandom')),
+  ];
 
   // Extra fandom add row
   const addRow = document.createElement('div');
