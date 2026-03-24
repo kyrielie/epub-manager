@@ -22,9 +22,13 @@ const state = {
 
 // Settings — persisted alongside userBooks
 const settings = {
-  hiddenFilters: {},  // keys to HIDE: rating levels, rel keys, 'ao3', fandom names
-  extraFandoms:  [],
+  hiddenFilters:      {},  // keys to HIDE: rating levels, rel keys, publisher keys, fandom names
+  extraFandoms:       [],
+  detectedPublishers: [], // auto-detected publisher list (persisted so order is stable)
 };
+
+// Pending filter state for deferred application in Settings
+const pendingFilters = { active: false, hiddenFilters: null };
 
 function isHidden(key) { return !!settings.hiddenFilters[key]; }
 function setHidden(key, hidden) {
@@ -59,22 +63,67 @@ function normStr(s) { return s.toLowerCase().replace(/[^a-z0-9]/g, ''); }
 
 function detectFandoms(book) {
   const tags = [...(book.tags || []), ...(book.customTags || [])];
-  const fandoms = [];
   const fandomList = allFandoms();
+  const found = [];
   for (const tag of tags) {
     const tn = normStr(tag);
     for (const f of fandomList) {
       const fn = normStr(f);
-      if (tn === fn || tn.includes(fn) || fn.includes(tn)) {
-        if (!fandoms.includes(f)) fandoms.push(f);
+      // Tag contains fandom name OR fandom name contains tag (for short tags like "HP")
+      if (fn.length >= 3 && (tn.includes(fn) || fn.includes(tn))) {
+        if (!found.includes(f)) found.push(f);
         break;
       }
     }
   }
-  return fandoms;
+  return found;
 }
 
-// ── Relationship category detection ────────────────────────────────────────
+// Returns the set of raw tag strings that matched as fandoms (for filtering them out of the tag row)
+function fandomTagSet(book) {
+  const tags = [...(book.tags || []), ...(book.customTags || [])];
+  const fandomList = allFandoms();
+  const matched = new Set();
+  for (const tag of tags) {
+    const tn = normStr(tag);
+    for (const f of fandomList) {
+      const fn = normStr(f);
+      if (fn.length >= 3 && (tn.includes(fn) || fn.includes(tn))) {
+        matched.add(tag);
+        break;
+      }
+    }
+  }
+  return matched;
+}
+
+// ── Publisher detection ─────────────────────────────────────────────────────
+// Returns a normalised key and display label for a publisher string.
+// AO3 stays as a special-cased key 'ao3'; everything else uses a lowercased slug.
+function publisherKey(pub) {
+  const lc = (pub || '').toLowerCase().trim();
+  if (!lc) return null;
+  if (lc.includes('ao3') || lc.includes('archiveofourown')) return 'ao3';
+  // Use the trimmed original as the key (deterministic, human-readable)
+  return pub.trim();
+}
+
+// Scan all calibre books and collect unique publishers, merging into settings.detectedPublishers.
+function detectPublishers() {
+  const seen = new Set(settings.detectedPublishers.map(p => p.key));
+  for (const book of state.calibreBooks) {
+    const pub = (book.publisher || '').trim();
+    if (!pub) continue;
+    const key = publisherKey(pub);
+    if (!key || key === 'ao3') continue; // AO3 handled separately
+    if (!seen.has(key)) {
+      seen.add(key);
+      settings.detectedPublishers.push({ key, label: pub });
+    }
+  }
+}
+
+
 const REL_PATTERNS = [
   { key: 'M/M',   pattern: 'm/m'   },
   { key: 'F/M',   pattern: 'f/m'   },
@@ -126,6 +175,9 @@ function bookRating(book) {
 function bookPassesRatingFilter(book) { return bookPassesContentFilter(book); }
 
 function bookPassesContentFilter(book) {
+  // Always hide books with no publisher
+  if (!(book.publisher || '').trim()) return false;
+
   if (!Object.keys(settings.hiddenFilters).length) return true;
 
   // Rating
@@ -136,11 +188,17 @@ function bookPassesContentFilter(book) {
   const rel = detectRelationship(book);
   if (rel && isHidden(rel)) return false;
 
-  // Publisher (AO3)
+  // Publisher (AO3 special-cased, then other detected publishers)
   if (isHidden('ao3') && isAo3Book(book)) return false;
+  for (const { key } of (settings.detectedPublishers || [])) {
+    if (isHidden(key) && (book.publisher || '').trim() === key) return false;
+  }
 
-  // Fandom — hide only if ALL detected fandoms are hidden
-  if (isAo3Book(book)) {
+  // Fandom — applies to ALL books (not just AO3).
+  // A book is hidden when every one of its detected fandoms is toggled off.
+  // Books whose tags match no known fandom are never hidden by fandom filters.
+  const anyFandomHidden = Object.keys(settings.hiddenFilters).some(k => allFandoms().includes(k));
+  if (anyFandomHidden) {
     const fandoms = detectFandoms(book);
     if (fandoms.length > 0 && fandoms.every(f => isHidden(f))) return false;
   }
@@ -246,13 +304,12 @@ function scheduleSave() {
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 async function boot() {
-  const data = await window.api.getAppData();
-  if (data.books)    state.userBooks = data.books;
-  if (data.history)  matchHistory    = data.history;
-  if (data.settings) Object.assign(settings, data.settings);
+  // First load: pass empty string to get the index/last-used settings
+  const init = await window.api.getAppData('');
+  if (init.settings) Object.assign(settings, init.settings);
   attachEvents();
-  if (data.libraryPath) {
-    await loadLibrary(data.libraryPath);
+  if (init.libraryPath) {
+    await loadLibrary(init.libraryPath);
   } else {
     showEmptyState();
   }
@@ -266,14 +323,25 @@ async function loadLibrary(libPath) {
     showEmptyState();
     return;
   }
-  state.libraryPath    = libPath;
-  state.calibreBooks   = result.books;
-  state.bookMap        = {};
+  // Load per-library user data
+  const data = await window.api.getAppData(libPath);
+  state.userBooks = data.books || {};
+  if (data.history) { matchHistory.length = 0; matchHistory.push(...data.history); }
+  else matchHistory.length = 0;
+  if (data.settings) Object.assign(settings, data.settings);
+
+  state.libraryPath  = libPath;
+  state.calibreBooks = result.books;
+  state.bookMap      = {};
   result.books.forEach(b => { state.bookMap[b.id] = b; getUser(b.id); });
-  state.searchIndex    = buildSearchIndex(result.books);
+  state.searchIndex  = buildSearchIndex(result.books);
+  detectPublishers(); // auto-detect publishers from loaded library
+  seenPairs.clear();
+  rankPair = null;
   recomputeVisible();
   hideEmptyState();
   renderAll();
+  if (document.getElementById('view-settings').classList.contains('active')) renderSettings();
 }
 
 // ── Virtual scroller ───────────────────────────────────────────────────────
@@ -369,18 +437,22 @@ function makeBookRow(book) {
   // Line 2: fandom + relationship (AO3 only, separate line)
   const fandomLine = document.createElement('div');
   fandomLine.className = 'book-fandom-line';
+  const bookFandomSet = new Set();
   if (isAo3Book(book)) {
-    detectFandoms(book).forEach(f => {
-      if (settings.showFandomTag !== false) fandomLine.appendChild(makeTag(f, 'tag-fandom', filterByTag));
-    });
+    if (!isHidden('showFandom')) {
+      const bookFandoms = detectFandoms(book);
+      const fs = fandomTagSet(book);
+      fs.forEach(t => bookFandomSet.add(t));
+      bookFandoms.forEach(f => fandomLine.appendChild(makeTag(f, 'tag-fandom', filterByTag)));
+    }
     const rel = detectRelationship(book);
     if (rel) fandomLine.appendChild(makeTag(rel, 'tag-rel'));
   }
 
-  // Line 3: tags (one line, overflow hidden) — clickable to filter
+  // Line 3: tags (excluding fandom-matched ones)
   const tagsLine = document.createElement('div');
   tagsLine.className = 'book-tags-line';
-  const allTags = [...book.customTags, ...book.tags];
+  const allTags = [...book.customTags, ...book.tags].filter(t => !bookFandomSet.has(t));
   allTags.forEach(t => tagsLine.appendChild(makeTag(t, '', filterByTag)));
 
   // Line 3–5: description (3 lines max via CSS clamp)
@@ -587,7 +659,31 @@ function renderStats() {
     if (u.read)           read++;
     if (u.matchCount > 0) ranked++;
   }
-  document.getElementById('stat-total').textContent  = state.calibreBooks.length.toLocaleString();
+
+  const total    = state.calibreBooks.length;
+  const filtered = state.calibreBooks.filter(b => bookPassesContentFilter(b)).length;
+  const totalEl  = document.getElementById('stat-total');
+
+  if (filtered < total) {
+    // Filters active — show filtered count and dim the total as context
+    totalEl.textContent = filtered.toLocaleString();
+    totalEl.title       = filtered.toLocaleString() + ' shown of ' + total.toLocaleString() + ' total';
+    // Add a small "/ total" annotation if not already there
+    let sub = document.getElementById('stat-total-sub');
+    if (!sub) {
+      sub = document.createElement('span');
+      sub.id = 'stat-total-sub';
+      sub.style.cssText = 'font-size:.58rem;color:var(--dim);font-family:var(--mono);display:block;text-align:center;';
+      totalEl.parentElement.appendChild(sub);
+    }
+    sub.textContent = '/ ' + total.toLocaleString();
+  } else {
+    totalEl.textContent = total.toLocaleString();
+    totalEl.title       = '';
+    const sub = document.getElementById('stat-total-sub');
+    if (sub) sub.remove();
+  }
+
   document.getElementById('stat-read').textContent   = read.toLocaleString();
   document.getElementById('stat-ranked').textContent = ranked.toLocaleString();
 }
@@ -613,32 +709,92 @@ function renderRankings() {
 
   // ── Histogram ────────────────────────────────────────────────────────────
   const BINS = 20;
-  const binSize = range / BINS;
-  const counts = new Array(BINS).fill(0);
+  const binSize = range / BINS || 1;
+
+  // Assign each book to a bin
+  const bins = Array.from({ length: BINS }, () => []);
   readBooks.forEach(b => {
     const idx = Math.min(BINS - 1, Math.floor((b.elo - minElo) / binSize));
-    counts[idx]++;
+    bins[idx].push(b);
   });
-  const maxCount = Math.max(...counts, 1);
+  const maxCount = Math.max(...bins.map(b => b.length), 1);
 
   const histWrap = document.createElement('div');
   histWrap.className = 'hist-wrap';
+
   const histTitle = document.createElement('div');
   histTitle.className = 'hist-title';
   histTitle.textContent = 'ELO distribution — ' + readBooks.length + ' ranked books';
   histWrap.appendChild(histTitle);
+
+  // Tooltip element (reused across bars)
+  const tooltip = document.createElement('div');
+  tooltip.className = 'hist-tooltip';
+  tooltip.style.display = 'none';
+  histWrap.appendChild(tooltip);
+
   const histBars = document.createElement('div');
   histBars.className = 'hist-bars';
-  counts.forEach((count, i) => {
+
+  bins.forEach((booksInBin, i) => {
     const bar = document.createElement('div');
     bar.className = 'hist-bar';
+    bar.classList.toggle('hist-bar-empty', booksInBin.length === 0);
+
     const fill = document.createElement('div');
     fill.className = 'hist-bar-fill';
-    fill.style.height = Math.round((count / maxCount) * 100) + '%';
-    bar.title = Math.round(minElo + i * binSize) + ' ELO · ' + count + ' book' + (count !== 1 ? 's' : '');
+    const pctH = Math.max(2, Math.round((booksInBin.length / maxCount) * 100));
+    fill.style.height = pctH + '%';
+
+    const eloLow  = Math.round(minElo + i * binSize);
+    const eloHigh = Math.round(eloLow + binSize);
+    bar.title = eloLow + '–' + eloHigh + ' ELO · ' + booksInBin.length + ' book' + (booksInBin.length !== 1 ? 's' : '');
+
+    bar.addEventListener('mouseenter', e => {
+      if (booksInBin.length === 0) return;
+      const titles = booksInBin.slice(0, 8).map(b => escHtml(b.title)).join('<br>');
+      const more   = booksInBin.length > 8 ? '<br><em>+' + (booksInBin.length - 8) + ' more</em>' : '';
+      tooltip.innerHTML = '<strong>' + eloLow + '–' + eloHigh + ' ELO (' + booksInBin.length + ')</strong><br>' + titles + more;
+      tooltip.style.display = 'block';
+      // Position tooltip above bar
+      const barRect = bar.getBoundingClientRect();
+      const wrapRect = histWrap.getBoundingClientRect();
+      tooltip.style.left = Math.min(barRect.left - wrapRect.left, wrapRect.width - 220) + 'px';
+    });
+    bar.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+
+    // Click: filter rankings list to just this bin's books
+    if (booksInBin.length > 0) {
+      bar.style.cursor = 'pointer';
+      bar.addEventListener('click', () => {
+        const binIds = new Set(booksInBin.map(b => b.id));
+        document.querySelectorAll('.rank-row').forEach(row => {
+          row.style.display = binIds.has(row.dataset.id) ? '' : 'none';
+        });
+        // Show a clear-filter button if not already present
+        let clearBtn = document.getElementById('hist-clear-filter');
+        if (!clearBtn) {
+          clearBtn = document.createElement('button');
+          clearBtn.id = 'hist-clear-filter';
+          clearBtn.className = 'ghost-btn';
+          clearBtn.style.cssText = 'font-size:.72rem;padding:3px 10px;margin-left:8px;';
+          clearBtn.textContent = '✕ clear filter';
+          clearBtn.addEventListener('click', () => {
+            document.querySelectorAll('.rank-row').forEach(r => { r.style.display = ''; });
+            clearBtn.remove();
+            document.querySelectorAll('.hist-bar').forEach(b => b.classList.remove('hist-bar-active'));
+          });
+          histTitle.appendChild(clearBtn);
+        }
+        document.querySelectorAll('.hist-bar').forEach(b => b.classList.remove('hist-bar-active'));
+        bar.classList.add('hist-bar-active');
+      });
+    }
+
     bar.appendChild(fill);
     histBars.appendChild(bar);
   });
+
   const histAxis = document.createElement('div');
   histAxis.className = 'hist-axis';
   const axisMin = document.createElement('span'); axisMin.textContent = minElo;
@@ -737,23 +893,24 @@ function buildCardContent(el, book, opts) {
   author.className = 'rank-card-author';
   author.textContent = book.author;
 
-  // Fandom row (AO3 books only, detected from tags)
-  const fandoms = isAo3Book(book) ? detectFandoms(book) : [];
-  const rel     = isAo3Book(book) ? detectRelationship(book) : null;
+  // Fandom row — separate line, only for AO3 books
+  const fandoms   = isAo3Book(book) ? detectFandoms(book) : [];
+  const fandomSet = isAo3Book(book) ? fandomTagSet(book)  : new Set();
+  const rel       = isAo3Book(book) ? detectRelationship(book) : null;
 
   const metaRow = document.createElement('div');
   metaRow.className = 'card-meta-row';
-  if (settings.showFandomTag) {
-    fandoms.forEach(f => {
-      const t = makeTag(f, 'tag-fandom', filterByTag);
-      metaRow.appendChild(t);
-    });
+  if (!isHidden('showFandom')) {
+    fandoms.forEach(f => metaRow.appendChild(makeTag(f, 'tag-fandom', filterByTag)));
   }
   if (rel) metaRow.appendChild(makeTag(rel, 'tag-rel'));
 
+  // Generic tags row — exclude tags already shown as fandoms
   const tagsEl = document.createElement('div');
   tagsEl.className = 'sort-card-tags';
-  [...(book.customTags || []), ...(book.tags || [])].forEach(t => tagsEl.appendChild(makeTag(t, '', filterByTag)));
+  [...(book.customTags || []), ...(book.tags || [])]
+    .filter(t => !fandomSet.has(t))
+    .forEach(t => tagsEl.appendChild(makeTag(t, '', filterByTag)));
 
   const divider = document.createElement('div');
   divider.className = 'sort-card-divider';
@@ -799,7 +956,8 @@ function buildCardContent(el, book, opts) {
 }
 
 // ── ELO comparison ─────────────────────────────────────────────────────────
-let rankPair = null;
+let rankPair    = null;
+let nextPair    = null;   // preloaded — ready to show immediately after a pick
 let compareAnimating = false;
 
 function updateRankPair() {
@@ -813,9 +971,11 @@ function updateRankPair() {
     return;
   }
   empty.style.display = 'none'; pair.style.display = ''; actions.style.display = '';
-  if (!rankPair) pickNewPair(readBooks);
+  if (!rankPair) {
+    pickNewPair(readBooks);
+    preloadNextPair(readBooks);
+  }
 
-  // Update stats display
   const statsEl = document.getElementById('compare-stats');
   if (statsEl) {
     const elapsed = (Date.now() - compareStats.sessionStart) / 1000 / 3600;
@@ -825,42 +985,78 @@ function updateRankPair() {
   }
 }
 
-function pickNewPair(readBooks) {
-  if (!readBooks) readBooks = state.calibreBooks.filter(b => getUser(b.id).read && bookPassesRatingFilter(b));
-  if (readBooks.length < 2) return;
-
-  // Try to find a pair we haven't seen yet; give up after 200 attempts and clear history
+function selectNextBook(readBooks, excludeId) {
   const sorted = [...readBooks].sort((a, b) => getUser(a.id).matchCount - getUser(b.id).matchCount);
   const pool   = sorted.slice(0, Math.max(4, Math.ceil(sorted.length * 0.3)));
+  let candidate, attempts = 0;
+  do {
+    candidate = pool[Math.floor(Math.random() * pool.length)];
+    attempts++;
+    if (attempts > 200) { seenPairs.clear(); break; }
+  } while (candidate.id === excludeId);
+  return candidate;
+}
 
+function selectPair(readBooks) {
+  if (readBooks.length < 2) return null;
   let a, b, attempts = 0;
   do {
-    a = pool[Math.floor(Math.random() * pool.length)];
+    a = selectNextBook(readBooks, null);
     b = readBooks[Math.floor(Math.random() * readBooks.length)];
     attempts++;
     if (attempts > 200) { seenPairs.clear(); break; }
   } while (b.id === a.id || seenPairs.has(pairKey(a.id, b.id)));
-
   seenPairs.add(pairKey(a.id, b.id));
-  rankPair = [mergedBook(a), mergedBook(b)];
+  return [mergedBook(a), mergedBook(b)];
+}
+
+function pickNewPair(readBooks) {
+  if (!readBooks) readBooks = state.calibreBooks.filter(b => getUser(b.id).read && bookPassesRatingFilter(b));
+  if (readBooks.length < 2) return;
+  const pair = selectPair(readBooks);
+  if (!pair) return;
+  rankPair = pair;
   fillRankCard('rank-a', rankPair[0]);
   fillRankCard('rank-b', rankPair[1]);
 }
 
-function fillRankCard(elId, book) {
-  const el = document.getElementById(elId);
+function preloadNextPair(readBooks) {
+  if (!readBooks) readBooks = state.calibreBooks.filter(b => getUser(b.id).read && bookPassesRatingFilter(b));
+  if (readBooks.length < 2) { nextPair = null; return; }
+  const pair = selectPair(readBooks);
+  if (!pair) { nextPair = null; return; }
+  nextPair = pair;
+
+  // Fill the visible peek strip so the next pair is already rendered below
+  const peekA = document.getElementById('rank-next-a');
+  const peekB = document.getElementById('rank-next-b');
+  if (peekA && peekB) {
+    prefillRankCard(peekA, nextPair[0]);
+    prefillRankCard(peekB, nextPair[1]);
+  }
+
+  // Also preload into the hidden staging area (used by fillRankCard transplant logic)
+  const staging = document.getElementById('rank-pair-next');
+  if (staging) {
+    staging.innerHTML = '';
+    nextPair.forEach((book, i) => {
+      const el = document.createElement('div');
+      el.id = 'rank-stage-' + (i === 0 ? 'a' : 'b');
+      staging.appendChild(el);
+      prefillRankCard(el, book);
+    });
+  }
+}
+
+function prefillRankCard(el, book) {
   el.dataset.id = book.id;
-  el.classList.remove('anim-swipe-left', 'anim-swipe-right');
-
-  const sampleEl = buildCardContent(el, book, { showElo: true, samplePlaceholder: book.epubPath ? 'Loading sample…' : '' });
-
+  const sampleEl = buildCardContent(el, book, { showElo: true, samplePlaceholder: book.epubPath ? 'Loading…' : '' });
   if (book.epubPath) {
     const btn = document.createElement('button');
     btn.className = 'ghost-btn rank-card-open-btn';
     btn.textContent = 'Open in reader';
     btn.addEventListener('click', e => { e.stopPropagation(); window.api.openEpub(book.epubPath); });
     el.appendChild(btn);
-
     window.api.epubSample(book.epubPath).then(sample => {
       sampleEl.innerHTML = '';
       if (!sample) { sampleEl.textContent = '(no readable sample found)'; return; }
@@ -875,11 +1071,32 @@ function fillRankCard(elId, book) {
   }
 }
 
+function fillRankCard(elId, book) {
+  // Try the new staging IDs first, then fall back to old naming
+  const side = elId.replace('rank-', '');   // 'a' or 'b'
+  const staging = document.getElementById('rank-stage-' + side) ||
+                  document.getElementById('rank-next-' + side);
+  const el = document.getElementById(elId);
+  el.dataset.id = book.id;
+  // Clear any leftover animation classes from the previous round
+  el.classList.remove('anim-exit-win', 'anim-exit-lose', 'anim-rise');
+  // If the preloaded staging card matches this book, transplant its content
+  if (staging && staging.dataset.id === book.id) {
+    el.innerHTML = staging.innerHTML;
+    el.dataset.id = book.id;
+    // Re-attach open button listener (innerHTML clone loses event handlers)
+    const btn = el.querySelector('.rank-card-open-btn');
+    if (btn) btn.addEventListener('click', e => { e.stopPropagation(); window.api.openEpub(book.epubPath); });
+  } else {
+    prefillRankCard(el, book);
+  }
+}
+
 function recordWin(winnerId) {
   if (!rankPair || compareAnimating) return;
   const loserId = rankPair[0].id === winnerId ? rankPair[1].id : rankPair[0].id;
-  const winCard = winnerId === rankPair[0].id ? 'rank-a' : 'rank-b';
-  const loseCard = winCard === 'rank-a' ? 'rank-b' : 'rank-a';
+  const winSide  = winnerId === rankPair[0].id ? 'a' : 'b';
+  const loseSide = winSide === 'a' ? 'b' : 'a';
 
   compareAnimating = true;
   compareStats.total++;
@@ -899,18 +1116,56 @@ function recordWin(winnerId) {
 
   scheduleSave();
 
-  // Animate: winner slides right, loser slides left
-  const wEl = document.getElementById(winCard);
-  const lEl = document.getElementById(loseCard);
-  wEl.classList.add('anim-swipe-right');
-  lEl.classList.add('anim-swipe-left');
+  const wEl = document.getElementById('rank-' + winSide);
+  const lEl = document.getElementById('rank-' + loseSide);
+
+  // Kick off exit animations on current pair
+  wEl.classList.add('anim-exit-win');
+  lEl.classList.add('anim-exit-lose');
+
+  // The peek strip (#rank-pair-next-visible) is already showing the next pair.
+  // After the exit animation completes, promote the next pair to the current slots
+  // and animate them rising into place.
+  const EXIT_MS = 460;   // matches longest animation (rankExitWin 0.42s + 0.08s delay)
 
   setTimeout(() => {
     compareAnimating = false;
-    rankPair = null;
+
+    if (nextPair) {
+      rankPair = nextPair;
+      nextPair = null;
+
+      // Transplant content from peek strip into the current pair slots
+      fillRankCard('rank-a', rankPair[0]);
+      fillRankCard('rank-b', rankPair[1]);
+
+      const aEl = document.getElementById('rank-a');
+      const bEl = document.getElementById('rank-b');
+
+      // Force reflow so the browser registers the cleared animation state,
+      // then defer adding anim-rise to the next frame so the translateY(100%)
+      // start keyframe is guaranteed to be painted before the animation runs.
+      void aEl.offsetWidth;
+      void bEl.offsetWidth;
+
+      requestAnimationFrame(() => {
+        aEl.classList.add('anim-rise');
+        bEl.classList.add('anim-rise');
+
+        setTimeout(() => {
+          aEl.classList.remove('anim-rise');
+          bEl.classList.remove('anim-rise');
+        }, 400);
+      });
+    } else {
+      rankPair = null;
+    }
+
     renderAll();
+    const readBooks = state.calibreBooks.filter(b => getUser(b.id).read && bookPassesRatingFilter(b));
+    preloadNextPair(readBooks);
     if (document.getElementById('view-history').classList.contains('active')) renderHistory();
-  }, 340);
+  }, EXIT_MS);
 }
 
 function revertMatch(index) {
@@ -1280,6 +1535,9 @@ function attachSortEvents() {
 
 // ── View switching ─────────────────────────────────────────────────────────
 function switchView(name) {
+  // If leaving settings without applying, discard pending changes
+  if (name !== 'settings') pendingFilters.active = false;
+
   document.querySelectorAll('.view').forEach(v    => v.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('view-' + name).classList.add('active');
@@ -1304,10 +1562,27 @@ function renderSettings() {
   if (!body) return;
   body.innerHTML = '';
 
-  // Helper: build one toggle row
+  // Initialise pending state from live settings on first open (or re-open)
+  if (!pendingFilters.active) {
+    pendingFilters.hiddenFilters = Object.assign({}, settings.hiddenFilters);
+    pendingFilters.active = true;
+  }
+
+  // Whether a key is hidden in the *pending* (not-yet-applied) state
+  function isPendingHidden(key) { return !!pendingFilters.hiddenFilters[key]; }
+  function setPendingHidden(key, hidden) {
+    if (hidden) pendingFilters.hiddenFilters[key] = true;
+    else delete pendingFilters.hiddenFilters[key];
+  }
+
+  // Helper: build one toggle row (operates on pending state, no live filter yet)
   function makeToggleRow(label, key, tagCls) {
-    const row = document.createElement('label');
+    // Use a div — NOT a label — to avoid the browser's implicit checkbox-toggle
+    // that fires a second toggle when the user clicks, causing every other click
+    // to cancel out (the double-flip bug).
+    const row = document.createElement('div');
     row.className = 'settings-toggle-row';
+    row.style.cursor = 'pointer';
 
     const left = document.createElement('span');
     left.className = 'settings-toggle-label';
@@ -1327,21 +1602,20 @@ function renderSettings() {
     thumb.className = 'sw-thumb';
     sw.appendChild(thumb);
 
-    const input = document.createElement('input');
-    input.type = 'checkbox';
-    input.style.display = 'none';
-    input.checked = !isHidden(key);
-    if (!isHidden(key)) sw.classList.add('sw-on');
+    // Track state directly — no hidden input needed
+    let checked = !isPendingHidden(key);
+    if (checked) sw.classList.add('sw-on');
 
-    input.addEventListener('change', () => {
-      setHidden(key, !input.checked);
-      sw.classList.toggle('sw-on', input.checked);
-      scheduleSave();
-      recomputeVisible(); vsLastStart = -1; renderAll();
-    });
-    sw.addEventListener('click', () => { input.checked = !input.checked; input.dispatchEvent(new Event('change')); });
+    function toggle() {
+      checked = !checked;
+      sw.classList.toggle('sw-on', checked);
+      setPendingHidden(key, !checked);
+      const confirmBtn = document.getElementById('settings-confirm-btn');
+      if (confirmBtn) confirmBtn.classList.add('has-changes');
+    }
 
-    row.append(left, input, sw);
+    row.addEventListener('click', toggle);
+    row.append(left, sw);
     return row;
   }
 
@@ -1356,6 +1630,44 @@ function renderSettings() {
     rows.forEach(r => sec.appendChild(r));
     return sec;
   }
+
+  // ── Confirm selection button ───────────────────────────────────────────────
+  const confirmWrap = document.createElement('div');
+  confirmWrap.style.cssText = 'position:sticky;top:0;z-index:10;background:var(--bg);padding:8px 0 4px;display:flex;gap:10px;align-items:center;margin-bottom:4px;';
+
+  const confirmBtn = document.createElement('button');
+  confirmBtn.id = 'settings-confirm-btn';
+  confirmBtn.className = 'action-btn';
+  confirmBtn.style.cssText = 'width:auto;padding:7px 22px;opacity:0.55;transition:opacity .15s,background .15s;';
+  confirmBtn.textContent = 'Apply filters';
+  confirmBtn.title = 'Apply your toggle selections to the library';
+
+  // Pulse style injected once
+  if (!document.getElementById('confirm-btn-style')) {
+    const style = document.createElement('style');
+    style.id = 'confirm-btn-style';
+    style.textContent = `
+      #settings-confirm-btn.has-changes { opacity:1; box-shadow: 0 0 0 3px var(--accent-muted,rgba(99,179,237,.35)); }
+    `;
+    document.head.appendChild(style);
+  }
+
+  confirmBtn.addEventListener('click', () => {
+    // Commit pending → live
+    settings.hiddenFilters = Object.assign({}, pendingFilters.hiddenFilters);
+    pendingFilters.active = false; // will be re-initialised on next render
+    scheduleSave();
+    recomputeVisible(); vsLastStart = -1; renderAll();
+    confirmBtn.classList.remove('has-changes');
+    confirmBtn.style.opacity = '0.55';
+    // Brief "Applied!" feedback
+    const orig = confirmBtn.textContent;
+    confirmBtn.textContent = 'Applied ✓';
+    setTimeout(() => { confirmBtn.textContent = orig; }, 1200);
+  });
+
+  confirmWrap.appendChild(confirmBtn);
+  body.appendChild(confirmWrap);
 
   // ── Ratings ───────────────────────────────────────────────────────────────
   body.appendChild(makeSection('Ratings', [
@@ -1377,9 +1689,14 @@ function renderSettings() {
   ]));
 
   // ── Publisher ─────────────────────────────────────────────────────────────
-  body.appendChild(makeSection('Publisher', [
-    makeToggleRow('Archive of Our Own', 'ao3', ''),
-  ]));
+  // AO3 is detected separately; show its toggle only when the library has AO3 books.
+  const publisherRows = [];
+  const hasAo3 = state.calibreBooks.some(b => isAo3Book(b));
+  if (hasAo3) publisherRows.push(makeToggleRow('Archive of Our Own', 'ao3', ''));
+  for (const { key, label } of (settings.detectedPublishers || [])) {
+    publisherRows.push(makeToggleRow(label, key, ''));
+  }
+  if (publisherRows.length) body.appendChild(makeSection('Publisher', publisherRows));
 
   // ── Fandom ────────────────────────────────────────────────────────────────
   const fandomRows = allFandoms().map(f => makeToggleRow(f, f, 'tag-fandom'));
@@ -1402,6 +1719,7 @@ function renderSettings() {
     if (!v || allFandoms().includes(v)) { fi.value = ''; return; }
     settings.extraFandoms.push(v);
     scheduleSave();
+    pendingFilters.active = false; // reset pending so new fandom row reflects correct state
     renderSettings();
   };
   fa.addEventListener('click', doAdd);

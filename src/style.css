@@ -367,34 +367,80 @@ nav { display: flex; flex-direction: column; gap: 2px; padding: 0 .5rem; -webkit
 /* ── Compare view ──────────────────────────────────────────────────────── */
 #view-rank {
   align-items: center; justify-content: flex-start;
-  gap: .75rem; padding: .75rem 1.5rem 1rem; overflow: hidden;
+  gap: .6rem; padding: .75rem 1.5rem 1rem; overflow: hidden;
 }
 #rank-header { text-align: center; flex-shrink: 0; }
 #rank-header h2 { font-family: var(--serif); font-weight: 400; font-size: 1.5rem; }
 .rank-sub { color: var(--muted); font-size: .78rem; margin-top: .2rem; }
 
-#rank-pair {
-  display: flex; align-items: stretch; gap: 0;
-  width: 100%; flex: 1; min-height: 0;
+/* Stacked deck container — current pair sits above, next pair peeks below */
+#rank-deck {
+  position: relative;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  /* leave room at the bottom for the peeking next-pair */
+  padding-bottom: 22px;
+  overflow: hidden;
 }
+
+/* Each row (current + next) share the same flex layout */
+.rank-pair-row {
+  display: flex; align-items: stretch; gap: 0;
+  width: 100%; height: 100%;
+}
+
+/* Current pair — sits on top, full height */
+#rank-pair {
+  position: absolute;
+  inset: 0 0 22px 0;   /* leave 22 px gap at bottom for the peek strip */
+  z-index: 2;
+  will-change: transform, opacity;
+}
+
+/* Next pair — peeking strip at the bottom */
+#rank-pair-next-visible {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 22px;          /* only the top edge is visible */
+  z-index: 1;
+  pointer-events: none;  /* not interactive until it becomes current */
+  overflow: hidden;
+  display: flex; gap: 0;
+}
+
 .rank-vs {
   display: flex; align-items: center; justify-content: center;
   width: 40px; flex-shrink: 0;
   font-family: var(--serif); font-style: italic; font-size: 1rem; color: var(--dim);
 }
+/* Hide the "vs" in the peek strip */
+#rank-pair-next-visible .rank-vs { visibility: hidden; }
 
 .rank-card {
   flex: 1; min-width: 0; min-height: 0;
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 14px; padding: 1.25rem 1.5rem;
-  cursor: pointer; transition: border-color .2s, background .2s, transform .15s;
+  cursor: pointer;
+  transition: border-color .2s, background .2s;
   display: flex; flex-direction: column; gap: 8px;
   overflow-y: auto;
+  will-change: transform, opacity;
 }
 .rank-card::-webkit-scrollbar { width: 4px; }
 .rank-card::-webkit-scrollbar-thumb { background: var(--surface3); }
 .rank-card:hover { border-color: var(--accent2); background: var(--surface2); }
-.rank-card:active { transform: scale(.99); }
+
+/* Peek strip cards — rounded top only, muted to suggest depth */
+#rank-pair-next-visible .rank-card {
+  border-radius: 14px 14px 0 0;
+  opacity: .55;
+  filter: brightness(.85);
+  cursor: default;
+  overflow: hidden;
+  pointer-events: none;
+  transition: none;
+}
 
 .rank-card-title {
   font-family: var(--serif); font-style: italic; font-size: 1.2rem; color: var(--text); line-height: 1.25;
@@ -403,6 +449,43 @@ nav { display: flex; flex-direction: column; gap: 2px; padding: 0 .5rem; -webkit
 .rank-card-elo { font-family: var(--mono); font-size: .7rem; color: var(--dim); margin-top: auto; flex-shrink: 0; }
 .rank-card-open-btn {
   flex-shrink: 0; padding: 5px 12px; font-size: .75rem; width: 100%;
+}
+
+/* ── Compare animation keyframes ─────────────────────────────────────── */
+
+/* Winner flies out to the right */
+@keyframes rankExitWin {
+  0%   { transform: translateX(0)   translateY(0)   rotate(0deg);  opacity: 1; }
+  100% { transform: translateX(62%) translateY(30px) rotate(6deg);  opacity: 0; }
+}
+/* Loser flies out to the left */
+@keyframes rankExitLose {
+  0%   { transform: translateX(0)    translateY(0)   rotate(0deg);  opacity: 1; }
+  100% { transform: translateX(-62%) translateY(30px) rotate(-6deg); opacity: 0; }
+}
+/* Next pair rises from below to fill the space */
+@keyframes rankRise {
+  0%   { transform: translateY(100%); opacity: .4; }
+  100% { transform: translateY(0);    opacity: 1;  }
+}
+/* Subtle winner highlight pulse before exit */
+@keyframes rankWinPulse {
+  0%   { box-shadow: 0 0 0 0   rgba(90,200,120,.0); border-color: var(--border); }
+  40%  { box-shadow: 0 0 0 4px rgba(90,200,120,.35); border-color: var(--read-fg); }
+  100% { box-shadow: 0 0 0 0   rgba(90,200,120,.0); border-color: var(--border); }
+}
+
+.rank-card.anim-exit-win  {
+  animation: rankWinPulse .12s ease-out,
+             rankExitWin  .42s .08s cubic-bezier(.4,0,.8,1) forwards;
+  pointer-events: none;
+}
+.rank-card.anim-exit-lose {
+  animation: rankExitLose .38s .04s cubic-bezier(.4,0,.8,1) forwards;
+  pointer-events: none;
+}
+.rank-card.anim-rise {
+  animation: rankRise .38s cubic-bezier(.2,0,.3,1) forwards;
 }
 
 #rank-actions { display: flex; gap: 10px; align-items: center; flex-shrink: 0; }

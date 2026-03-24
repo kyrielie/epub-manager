@@ -6,21 +6,59 @@ const fs = require('fs');
 const os = require('os');
 
 // ── App data (custom tags, read status, ELO) stored separately from Calibre ──
-const APP_DATA_PATH = path.join(os.homedir(), '.epub-manager', 'data.json');
+const APP_DATA_DIR = path.join(os.homedir(), '.epub-manager');
 
-function loadAppData() {
+// Each library gets its own data file keyed by a sanitised version of its path.
+// A global index file maps library paths → data file names so we can list them.
+const INDEX_PATH = path.join(APP_DATA_DIR, 'index.json');
+
+function ensureDir() {
+  if (!fs.existsSync(APP_DATA_DIR)) fs.mkdirSync(APP_DATA_DIR, { recursive: true });
+}
+
+function loadIndex() {
+  try { if (fs.existsSync(INDEX_PATH)) return JSON.parse(fs.readFileSync(INDEX_PATH, 'utf8')); } catch (_) {}
+  return {};
+}
+
+function saveIndex(idx) {
+  ensureDir();
+  fs.writeFileSync(INDEX_PATH, JSON.stringify(idx, null, 2));
+}
+
+function dataFileForLibrary(libraryPath) {
+  if (!libraryPath) return path.join(APP_DATA_DIR, 'data.json');
+  const idx = loadIndex();
+  if (idx[libraryPath]) return path.join(APP_DATA_DIR, idx[libraryPath]);
+  // Create a new slug-based filename
+  const slug = libraryPath
+    .replace(/^.*[/\\]/, '')       // last path component
+    .replace(/[^a-z0-9]/gi, '_')
+    .toLowerCase()
+    .slice(0, 40);
+  const filename = slug + '_' + Date.now() + '.json';
+  idx[libraryPath] = filename;
+  saveIndex(idx);
+  return path.join(APP_DATA_DIR, filename);
+}
+
+// The current active data file path (set when a library is loaded)
+let activeDataPath = path.join(APP_DATA_DIR, 'data.json');
+
+function loadAppData(libraryPath) {
+  if (libraryPath) activeDataPath = dataFileForLibrary(libraryPath);
   try {
-    if (fs.existsSync(APP_DATA_PATH)) {
-      return JSON.parse(fs.readFileSync(APP_DATA_PATH, 'utf8'));
+    if (fs.existsSync(activeDataPath)) {
+      return JSON.parse(fs.readFileSync(activeDataPath, 'utf8'));
     }
-  } catch (e) {}
-  return { libraryPath: '', books: {} };
+  } catch (_) {}
+  return { libraryPath: libraryPath || '', books: {} };
 }
 
 function saveAppData(data) {
-  const dir = path.dirname(APP_DATA_PATH);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(APP_DATA_PATH, JSON.stringify(data, null, 2));
+  if (data.libraryPath) activeDataPath = dataFileForLibrary(data.libraryPath);
+  ensureDir();
+  fs.writeFileSync(activeDataPath, JSON.stringify(data, null, 2));
 }
 
 // ── Calibre metadata.db reader ────────────────────────────────────────────────
@@ -169,7 +207,7 @@ ipcMain.handle('load-library', async (_, libraryPath) => {
   }
 });
 
-ipcMain.handle('get-app-data', () => loadAppData());
+ipcMain.handle('get-app-data', (_, libraryPath) => loadAppData(libraryPath));
 
 ipcMain.handle('save-app-data', (_, data) => {
   saveAppData(data);
@@ -237,8 +275,8 @@ ipcMain.handle('epub-sample', async (_, epubPath) => {
 });
 
 ipcMain.handle('open-data-folder', async () => {
-  const dir = require('path').dirname(APP_DATA_PATH);
-  shell.openPath(dir);
+  ensureDir();
+  shell.openPath(APP_DATA_DIR);
   return true;
 });
 

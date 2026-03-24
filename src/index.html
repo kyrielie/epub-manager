@@ -109,11 +109,22 @@
       <p class="rank-sub">Click the book you preferred. ELO updates after every pick.</p>
       <p id="compare-stats" style="font-size:.72rem;color:var(--dim);font-family:var(--mono);margin-top:.25rem;"></p>
     </div>
-    <div id="rank-pair">
-      <div class="rank-card" id="rank-a" data-id=""></div>
-      <div class="rank-vs">vs</div>
-      <div class="rank-card" id="rank-b" data-id=""></div>
+
+    <!-- Stacked deck: current pair on top, next pair peeking below -->
+    <div id="rank-deck">
+      <div id="rank-pair" class="rank-pair-row">
+        <div class="rank-card" id="rank-a" data-id=""></div>
+        <div class="rank-vs">vs</div>
+        <div class="rank-card" id="rank-b" data-id=""></div>
+      </div>
+      <!-- Visible peek strip for the preloaded next pair -->
+      <div id="rank-pair-next-visible" class="rank-pair-row" aria-hidden="true">
+        <div class="rank-card" id="rank-next-a" data-id=""></div>
+        <div class="rank-vs">vs</div>
+        <div class="rank-card" id="rank-next-b" data-id=""></div>
+      </div>
     </div>
+
     <div id="rank-actions">
       <button id="btn-skip" class="ghost-btn">Skip this pair</button>
       <button id="btn-go-rankings" class="action-btn">View rankings →</button>
@@ -121,6 +132,8 @@
     <div id="rank-empty">
       <p>Mark at least 2 books as read to start comparing.</p>
     </div>
+    <!-- Hidden staging area kept for epub sample preloading (off-screen) -->
+    <div id="rank-pair-next" style="display:none" aria-hidden="true"></div>
   </div>
 
   <!-- Rankings view -->
