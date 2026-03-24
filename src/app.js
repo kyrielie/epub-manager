@@ -3,7 +3,7 @@
 // ── Constants ──────────────────────────────────────────────────────────────
 const ELO_K       = 32;
 const ELO_DEFAULT = 1000;
-const ROW_H       = 130; // must match CSS .book-row height
+const ROW_H       = 148; // must match CSS .book-row height
 const OVERSCAN    = 8;   // extra rows rendered above/below the visible window
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -22,32 +22,130 @@ const state = {
 
 // Settings — persisted alongside userBooks
 const settings = {
-  maxRating: 'explicit',  // 'explicit' | 'mature' | 'teen' | 'general'
+  hiddenFilters: {},  // keys to HIDE: rating levels, rel keys, 'ao3', fandom names
+  extraFandoms:  [],
 };
 
-// Rating hierarchy: tags to detect each level (case-insensitive substring match)
+function isHidden(key) { return !!settings.hiddenFilters[key]; }
+function setHidden(key, hidden) {
+  if (hidden) settings.hiddenFilters[key] = true;
+  else delete settings.hiddenFilters[key];
+}
+
+// ── Fandom detection ────────────────────────────────────────────────────────
+const BUILTIN_FANDOMS = [
+  'Avatar: The Last Airbender','Batman','Supergirl','Bungou Stray Dogs',
+  'Check Please!','Chronicles of Narnia','Dream SMP','Genshin Impact',
+  'Good Omens','Gravity Falls','Hannibal','Harry Potter','Heartstopper',
+  'How to Train Your Dragon','Lord of the Rings','Lunar Chronicles',
+  'Marvel Cinematic Universe','Captain America','Guardians of the Galaxy',
+  'Thor','Iron Man','Loki','Spiderman','The Avengers','Venom',
+  'Merlin','Miraculous Ladybug','My Hero Academia',
+  'My Little Pony: Friendship is Magic','Mythology','Naruto',
+  'Neon Genesis Evangelion','Omniscient Reader','Original Work',
+  'Parks and Recreation','Percy Jackson','Red White & Royal Blue',
+  'Rise of the Guardians','Scott Pilgrim','Six of Crows','Star Trek',
+  'Star Wars','Supernatural','Tangled','Teen Wolf','The Devil Wears Prada',
+  'The Incredibles','Twilight','Unknown','Voltron: Legendary Defender',
+  'Warriors','Yuri!!! on Ice','Zootopia',
+];
+
+function allFandoms() {
+  return [...BUILTIN_FANDOMS, ...(settings.extraFandoms || [])];
+}
+
+// Fuzzy: normalize both sides, check substring containment both ways
+function normStr(s) { return s.toLowerCase().replace(/[^a-z0-9]/g, ''); }
+
+function detectFandoms(book) {
+  const tags = [...(book.tags || []), ...(book.customTags || [])];
+  const fandoms = [];
+  const fandomList = allFandoms();
+  for (const tag of tags) {
+    const tn = normStr(tag);
+    for (const f of fandomList) {
+      const fn = normStr(f);
+      if (tn === fn || tn.includes(fn) || fn.includes(tn)) {
+        if (!fandoms.includes(f)) fandoms.push(f);
+        break;
+      }
+    }
+  }
+  return fandoms;
+}
+
+// ── Relationship category detection ────────────────────────────────────────
+const REL_PATTERNS = [
+  { key: 'M/M',   pattern: 'm/m'   },
+  { key: 'F/M',   pattern: 'f/m'   },
+  { key: 'F/F',   pattern: 'f/f'   },
+  { key: 'Gen',   pattern: 'gen'   },
+  { key: 'Multi', pattern: 'multi' },
+  { key: 'Other', pattern: 'other' },
+];
+
+function detectRelationship(book) {
+  const tags = [...(book.tags || []), ...(book.customTags || [])].map(t => t.toLowerCase().trim());
+  for (const { key, pattern } of REL_PATTERNS) {
+    if (tags.some(t => t === pattern || t === key.toLowerCase())) return key;
+  }
+  return null;
+}
+
+function isAo3Book(book) {
+  return (book.publisher || '').toLowerCase().includes('ao3') ||
+         (book.publisher || '').toLowerCase().includes('archiveofourown') ||
+         (book.tags || []).some(t => /ao3|archive of our own/i.test(t));
+}
+
+// ── Compare seen pairs (prevent duplicates) ─────────────────────────────────
+const seenPairs = new Set();
+function pairKey(a, b) { return [a, b].sort().join('|'); }
+
+// Compare session stats
+const compareStats = { total: 0, sessionStart: Date.now() };
+
+// Rating detection for tag highlighting
 const RATING_TAGS = {
   explicit: 'explicit',
   mature:   'mature',
   teen:     'teen and up',
   general:  'general audiences',
+  notrated: 'not rated',
 };
-const RATING_ORDER = ['general', 'teen', 'mature', 'explicit']; // ascending permissiveness
 
 function bookRating(book) {
   const allTags = [...(book.tags || []), ...(book.customTags || [])].map(t => t.toLowerCase());
-  for (const level of ['explicit', 'mature', 'teen', 'general']) {
-    if (allTags.some(t => t.includes(RATING_TAGS[level]))) return level;
+  for (const [level, pattern] of Object.entries(RATING_TAGS)) {
+    if (allTags.some(t => t.includes(pattern))) return level;
   }
-  return null; // unrated
+  return null;
 }
 
-function bookPassesRatingFilter(book) {
-  const maxIdx  = RATING_ORDER.indexOf(settings.maxRating);
-  const rating  = bookRating(book);
-  if (!rating) return true; // unrated always shown
-  const bookIdx = RATING_ORDER.indexOf(rating);
-  return bookIdx <= maxIdx;
+// ── Unified content filter ──────────────────────────────────────────────────
+function bookPassesRatingFilter(book) { return bookPassesContentFilter(book); }
+
+function bookPassesContentFilter(book) {
+  if (!Object.keys(settings.hiddenFilters).length) return true;
+
+  // Rating
+  const rating = bookRating(book);
+  if (rating && isHidden(rating)) return false;
+
+  // Relationship
+  const rel = detectRelationship(book);
+  if (rel && isHidden(rel)) return false;
+
+  // Publisher (AO3)
+  if (isHidden('ao3') && isAo3Book(book)) return false;
+
+  // Fandom — hide only if ALL detected fandoms are hidden
+  if (isAo3Book(book)) {
+    const fandoms = detectFandoms(book);
+    if (fandoms.length > 0 && fandoms.every(f => isHidden(f))) return false;
+  }
+
+  return true;
 }
 
 // Match history lives outside state so it's not mixed with per-book userBooks keys.
@@ -268,7 +366,18 @@ function makeBookRow(book) {
   });
   titleLine.append(titleSpan, bySpan, authorSpan);
 
-  // Line 2: tags (one line, overflow hidden) — clickable to filter
+  // Line 2: fandom + relationship (AO3 only, separate line)
+  const fandomLine = document.createElement('div');
+  fandomLine.className = 'book-fandom-line';
+  if (isAo3Book(book)) {
+    detectFandoms(book).forEach(f => {
+      if (settings.showFandomTag !== false) fandomLine.appendChild(makeTag(f, 'tag-fandom', filterByTag));
+    });
+    const rel = detectRelationship(book);
+    if (rel) fandomLine.appendChild(makeTag(rel, 'tag-rel'));
+  }
+
+  // Line 3: tags (one line, overflow hidden) — clickable to filter
   const tagsLine = document.createElement('div');
   tagsLine.className = 'book-tags-line';
   const allTags = [...book.customTags, ...book.tags];
@@ -279,12 +388,15 @@ function makeBookRow(book) {
   desc.className = 'book-desc';
   desc.textContent = book.description || '';
 
-  // Line 6: publisher
+  // Line 6: publisher (settings-controlled)
   const pub = document.createElement('div');
   pub.className = 'book-publisher';
-  pub.textContent = book.publisher || '';
+  pub.textContent = (settings.showPublisherTag !== false) ? (book.publisher || '') : '';
 
-  info.append(titleLine, tagsLine, desc, pub);
+  const infoChildren = [titleLine];
+  if (fandomLine.children.length) infoChildren.push(fandomLine);
+  infoChildren.push(tagsLine, desc, pub);
+  info.append(...infoChildren);
 
   // ── Right: toggle switch ───────────────────────────────────────────────
   const toggleWrap = document.createElement('label');
@@ -612,41 +724,9 @@ function renderRankings() {
   list.appendChild(frag);
 }
 
-// ── ELO comparison ─────────────────────────────────────────────────────────
-let rankPair = null;
-
-function updateRankPair() {
-  const readBooks = state.calibreBooks.filter(b => getUser(b.id).read && bookPassesRatingFilter(b));
-  const empty   = document.getElementById('rank-empty');
-  const pair    = document.getElementById('rank-pair');
-  const actions = document.getElementById('rank-actions');
-
-  if (readBooks.length < 2) {
-    empty.style.display = ''; pair.style.display = 'none'; actions.style.display = 'none';
-    return;
-  }
-  empty.style.display = 'none'; pair.style.display = ''; actions.style.display = '';
-  if (!rankPair) pickNewPair(readBooks);
-}
-
-function pickNewPair(readBooks) {
-  if (!readBooks) readBooks = state.calibreBooks.filter(b => getUser(b.id).read && bookPassesRatingFilter(b));
-  if (readBooks.length < 2) return;
-
-  const sorted = [...readBooks].sort((a, b) => getUser(a.id).matchCount - getUser(b.id).matchCount);
-  const pool   = sorted.slice(0, Math.max(4, Math.ceil(sorted.length * 0.3)));
-  const a      = pool[Math.floor(Math.random() * pool.length)];
-  let b;
-  do { b = readBooks[Math.floor(Math.random() * readBooks.length)]; } while (b.id === a.id);
-
-  rankPair = [mergedBook(a), mergedBook(b)];
-  fillRankCard('rank-a', rankPair[0]);
-  fillRankCard('rank-b', rankPair[1]);
-}
-
-function fillRankCard(elId, book) {
-  const el = document.getElementById(elId);
-  el.dataset.id = book.id;
+// ── Shared card content builder (Compare + Sort) ────────────────────────────
+function buildCardContent(el, book, opts) {
+  // opts: { showElo, samplePlaceholder }
   el.innerHTML = '';
 
   const title = document.createElement('div');
@@ -657,9 +737,23 @@ function fillRankCard(elId, book) {
   author.className = 'rank-card-author';
   author.textContent = book.author;
 
+  // Fandom row (AO3 books only, detected from tags)
+  const fandoms = isAo3Book(book) ? detectFandoms(book) : [];
+  const rel     = isAo3Book(book) ? detectRelationship(book) : null;
+
+  const metaRow = document.createElement('div');
+  metaRow.className = 'card-meta-row';
+  if (settings.showFandomTag) {
+    fandoms.forEach(f => {
+      const t = makeTag(f, 'tag-fandom', filterByTag);
+      metaRow.appendChild(t);
+    });
+  }
+  if (rel) metaRow.appendChild(makeTag(rel, 'tag-rel'));
+
   const tagsEl = document.createElement('div');
   tagsEl.className = 'sort-card-tags';
-  [...(book.customTags || []), ...(book.tags || [])].forEach(t => tagsEl.appendChild(makeTag(t)));
+  [...(book.customTags || []), ...(book.tags || [])].forEach(t => tagsEl.appendChild(makeTag(t, '', filterByTag)));
 
   const divider = document.createElement('div');
   divider.className = 'sort-card-divider';
@@ -673,26 +767,98 @@ function fillRankCard(elId, book) {
 
   const sampleEl = document.createElement('div');
   sampleEl.className = 'sort-card-sample';
-  sampleEl.textContent = book.epubPath ? 'Loading sample…' : '';
+  sampleEl.textContent = opts.samplePlaceholder || '';
 
-  const eloEl = document.createElement('div');
-  eloEl.className = 'rank-card-elo';
-  eloEl.textContent = 'ELO ' + book.elo + ' · ' + book.matchCount + ' matches';
+  if (settings.showPublisher && book.publisher) {
+    const pub = document.createElement('div');
+    pub.className = 'sort-card-publisher';
+    pub.textContent = book.publisher;
+    el.appendChild(pub);  // will be re-ordered below
+  }
 
   const children = [title, author];
+  if (metaRow.children.length) children.push(metaRow);
   if (book.tags.length || book.customTags.length) children.push(tagsEl);
   if (book.description) children.push(divider, desc);
-  children.push(divider2, sampleEl, eloEl);
+  children.push(divider2, sampleEl);
+  if (settings.showPublisher && book.publisher) {
+    const pub2 = document.createElement('div');
+    pub2.className = 'sort-card-publisher';
+    pub2.textContent = book.publisher;
+    children.push(pub2);
+  }
+  if (opts.showElo) {
+    const eloEl = document.createElement('div');
+    eloEl.className = 'rank-card-elo';
+    eloEl.textContent = 'ELO ' + book.elo + ' · ' + book.matchCount + ' matches';
+    children.push(eloEl);
+  }
+
   children.forEach(c => el.appendChild(c));
+  return sampleEl;  // caller fills this async
+}
+
+// ── ELO comparison ─────────────────────────────────────────────────────────
+let rankPair = null;
+let compareAnimating = false;
+
+function updateRankPair() {
+  const readBooks = state.calibreBooks.filter(b => getUser(b.id).read && bookPassesRatingFilter(b));
+  const empty   = document.getElementById('rank-empty');
+  const pair    = document.getElementById('rank-pair');
+  const actions = document.getElementById('rank-actions');
+
+  if (readBooks.length < 2) {
+    empty.style.display = ''; pair.style.display = 'none'; actions.style.display = 'none';
+    return;
+  }
+  empty.style.display = 'none'; pair.style.display = ''; actions.style.display = '';
+  if (!rankPair) pickNewPair(readBooks);
+
+  // Update stats display
+  const statsEl = document.getElementById('compare-stats');
+  if (statsEl) {
+    const elapsed = (Date.now() - compareStats.sessionStart) / 1000 / 3600;
+    const pace = elapsed > 0.01 ? Math.round(compareStats.total / elapsed) : 0;
+    statsEl.textContent = compareStats.total + ' comparisons this session' +
+      (pace > 0 ? ' · ' + pace + '/hr' : '');
+  }
+}
+
+function pickNewPair(readBooks) {
+  if (!readBooks) readBooks = state.calibreBooks.filter(b => getUser(b.id).read && bookPassesRatingFilter(b));
+  if (readBooks.length < 2) return;
+
+  // Try to find a pair we haven't seen yet; give up after 200 attempts and clear history
+  const sorted = [...readBooks].sort((a, b) => getUser(a.id).matchCount - getUser(b.id).matchCount);
+  const pool   = sorted.slice(0, Math.max(4, Math.ceil(sorted.length * 0.3)));
+
+  let a, b, attempts = 0;
+  do {
+    a = pool[Math.floor(Math.random() * pool.length)];
+    b = readBooks[Math.floor(Math.random() * readBooks.length)];
+    attempts++;
+    if (attempts > 200) { seenPairs.clear(); break; }
+  } while (b.id === a.id || seenPairs.has(pairKey(a.id, b.id)));
+
+  seenPairs.add(pairKey(a.id, b.id));
+  rankPair = [mergedBook(a), mergedBook(b)];
+  fillRankCard('rank-a', rankPair[0]);
+  fillRankCard('rank-b', rankPair[1]);
+}
+
+function fillRankCard(elId, book) {
+  const el = document.getElementById(elId);
+  el.dataset.id = book.id;
+  el.classList.remove('anim-swipe-left', 'anim-swipe-right');
+
+  const sampleEl = buildCardContent(el, book, { showElo: true, samplePlaceholder: book.epubPath ? 'Loading sample…' : '' });
 
   if (book.epubPath) {
     const btn = document.createElement('button');
     btn.className = 'ghost-btn rank-card-open-btn';
     btn.textContent = 'Open in reader';
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      window.api.openEpub(book.epubPath);
-    });
+    btn.addEventListener('click', e => { e.stopPropagation(); window.api.openEpub(book.epubPath); });
     el.appendChild(btn);
 
     window.api.epubSample(book.epubPath).then(sample => {
@@ -709,13 +875,15 @@ function fillRankCard(elId, book) {
   }
 }
 
-// ── Match history ──────────────────────────────────────────────────────────
-// Each entry: { winnerId, loserId, winnerEloBefore, loserEloBefore, winnerEloAfter, loserEloAfter, ts }
-// Declared at top of file alongside state.
-
 function recordWin(winnerId) {
-  if (!rankPair) return;
+  if (!rankPair || compareAnimating) return;
   const loserId = rankPair[0].id === winnerId ? rankPair[1].id : rankPair[0].id;
+  const winCard = winnerId === rankPair[0].id ? 'rank-a' : 'rank-b';
+  const loseCard = winCard === 'rank-a' ? 'rank-b' : 'rank-a';
+
+  compareAnimating = true;
+  compareStats.total++;
+
   const uW = getUser(winnerId), uL = getUser(loserId);
   const wBefore = uW.elo, lBefore = uL.elo;
   const { winner, loser } = eloUpdate(uW.elo, uL.elo);
@@ -730,9 +898,19 @@ function recordWin(winnerId) {
   });
 
   scheduleSave();
-  rankPair = null;
-  renderAll();
-  if (document.getElementById('view-history').classList.contains('active')) renderHistory();
+
+  // Animate: winner slides right, loser slides left
+  const wEl = document.getElementById(winCard);
+  const lEl = document.getElementById(loseCard);
+  wEl.classList.add('anim-swipe-right');
+  lEl.classList.add('anim-swipe-left');
+
+  setTimeout(() => {
+    compareAnimating = false;
+    rankPair = null;
+    renderAll();
+    if (document.getElementById('view-history').classList.contains('active')) renderHistory();
+  }, 340);
 }
 
 function revertMatch(index) {
@@ -899,7 +1077,7 @@ function advanceSortCard(animate, direction) {
     renderSortCard(nextId);
     updateSortProgress();
     // Slide-in animation on new card
-    card.classList.remove('anim-left', 'anim-right', 'anim-in', 'hint-left', 'hint-right');
+    card.classList.remove('anim-left', 'anim-right', 'anim-up', 'anim-down', 'anim-in', 'hint-left', 'hint-right');
     void card.offsetWidth; // force reflow
     card.classList.add('anim-in');
     card.addEventListener('animationend', () => {
@@ -939,51 +1117,17 @@ async function renderSortCard(id) {
   const book = mergedBook(state.bookMap[id]);
   const card = document.getElementById('sort-card');
 
-  // Build card synchronously first so it appears immediately
-  const title = document.createElement('div');
-  title.className = 'sort-card-title';
-  title.textContent = book.title;
+  const sampleEl = buildCardContent(card, book, { showElo: false, samplePlaceholder: book.epubPath ? 'Loading sample…' : '' });
 
-  const author = document.createElement('div');
-  author.className = 'sort-card-author';
-  author.textContent = book.author;
-
-  const tagsEl = document.createElement('div');
-  tagsEl.className = 'sort-card-tags';
-  [...(book.customTags || []), ...(book.tags || [])].forEach(t => tagsEl.appendChild(makeTag(t)));
-
-  const divider = document.createElement('div');
-  divider.className = 'sort-card-divider';
-
-  const desc = document.createElement('div');
-  desc.className = 'sort-card-desc';
-  desc.textContent = book.description || '';
-
-  // Sample placeholder — filled async below
-  const sampleEl = document.createElement('div');
-  sampleEl.className = 'sort-card-sample';
-  sampleEl.textContent = book.epubPath ? 'Loading sample…' : '';
-
-  const pub = document.createElement('div');
-  pub.className = 'sort-card-publisher';
-  pub.textContent = book.publisher || '';
-
+  // Zone labels
   const labelLeft = document.createElement('div');
   labelLeft.className = 'sort-zone-label left';
   labelLeft.textContent = '← skip';
-
   const labelRight = document.createElement('div');
   labelRight.className = 'sort-zone-label right';
   labelRight.textContent = 'read →';
-
-  card.innerHTML = '';
-  const children = [title, author];
-  if (book.tags.length || book.customTags.length) children.push(tagsEl);
-  if (book.description) children.push(divider, desc);
-  children.push(divider.cloneNode(), sampleEl);
-  if (book.publisher) children.push(pub);
-  children.push(labelLeft, labelRight);
-  children.forEach(c => card.appendChild(c));
+  card.appendChild(labelLeft);
+  card.appendChild(labelRight);
 
   // Open-in-reader button
   const btnWrap = document.getElementById('sort-open-btns');
@@ -994,18 +1138,11 @@ async function renderSortCard(id) {
     b1.textContent = 'Open in reader';
     b1.addEventListener('click', () => window.api.openEpub(book.epubPath));
     btnWrap.appendChild(b1);
-  }
 
-  // Async: fetch epub sample and fill in
-  if (book.epubPath) {
     window.api.epubSample(book.epubPath).then(sample => {
       if (sortState.current !== id) return;
       sampleEl.innerHTML = '';
-      if (!sample) {
-        sampleEl.textContent = '(no readable sample found)';
-        return;
-      }
-      // Split on one or more newlines, render each non-empty chunk as a <p>
+      if (!sample) { sampleEl.textContent = '(no readable sample found)'; return; }
       sample.split(/\n+/).forEach(para => {
         const p = document.createElement('p');
         p.textContent = para.trim();
@@ -1093,8 +1230,8 @@ function sortDecide(action) {
     if (document.getElementById('view-history').classList.contains('active')) renderHistory();
   }
 
-  const direction = (action === 'read') ? 'right' : 'left';
-  advanceSortCard(true, direction);
+  const dirMap = { read: 'right', skip: 'left', later: 'up', rejected: 'down' };
+  advanceSortCard(true, dirMap[action] || 'left');
 }
 
 function attachSortEvents() {
@@ -1121,12 +1258,13 @@ function attachSortEvents() {
 
   document.addEventListener('keydown', function(e) {
     if (!document.getElementById('view-sort').classList.contains('active')) return;
-    // Don't fire if user is typing in an input
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-    if (e.key === 'Enter'  || e.key === 'ArrowRight') { e.preventDefault(); sortDecide('read');     return; }
-    if (e.key === ' '      || e.key === 'ArrowLeft')  { e.preventDefault(); sortDecide('skip');     return; }
-    if (e.key === 'l' || e.key === 'L')               { e.preventDefault(); sortDecide('later');    return; }
-    if (e.key === 'x' || e.key === 'X')               { e.preventDefault(); sortDecide('rejected'); return; }
+    if (e.key === 'ArrowRight') { e.preventDefault(); sortDecide('read');     return; }
+    if (e.key === 'ArrowLeft')  { e.preventDefault(); sortDecide('skip');     return; }
+    if (e.key === 'ArrowUp')    { e.preventDefault(); sortDecide('later');    return; }
+    if (e.key === 'ArrowDown')  { e.preventDefault(); sortDecide('rejected'); return; }
+    if (e.key === 'l' || e.key === 'L') { e.preventDefault(); sortDecide('later');    return; }
+    if (e.key === 'x' || e.key === 'X') { e.preventDefault(); sortDecide('rejected'); return; }
   });
 
   document.getElementById('btn-sort-later').addEventListener('click',  () => sortDecide('later'));
@@ -1162,9 +1300,145 @@ function switchView(name) {
 
 // ── Settings view ──────────────────────────────────────────────────────────
 function renderSettings() {
-  // Sync radio buttons to current settings value
-  const radios = document.querySelectorAll('input[name="max-rating"]');
-  radios.forEach(r => { r.checked = (r.value === settings.maxRating); });
+  const body = document.getElementById('settings-body');
+  if (!body) return;
+  body.innerHTML = '';
+
+  // Helper: build one toggle row
+  function makeToggleRow(label, key, tagCls) {
+    const row = document.createElement('label');
+    row.className = 'settings-toggle-row';
+
+    const left = document.createElement('span');
+    left.className = 'settings-toggle-label';
+    if (tagCls) {
+      const swatch = document.createElement('span');
+      swatch.className = 'tag ' + tagCls;
+      swatch.style.marginRight = '6px';
+      swatch.textContent = label;
+      left.appendChild(swatch);
+    } else {
+      left.textContent = label;
+    }
+
+    const sw = document.createElement('span');
+    sw.className = 'sw-track';
+    const thumb = document.createElement('span');
+    thumb.className = 'sw-thumb';
+    sw.appendChild(thumb);
+
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.style.display = 'none';
+    input.checked = !isHidden(key);
+    if (!isHidden(key)) sw.classList.add('sw-on');
+
+    input.addEventListener('change', () => {
+      setHidden(key, !input.checked);
+      sw.classList.toggle('sw-on', input.checked);
+      scheduleSave();
+      recomputeVisible(); vsLastStart = -1; renderAll();
+    });
+    sw.addEventListener('click', () => { input.checked = !input.checked; input.dispatchEvent(new Event('change')); });
+
+    row.append(left, input, sw);
+    return row;
+  }
+
+  // Helper: build a section
+  function makeSection(title, rows) {
+    const sec = document.createElement('section');
+    sec.className = 'settings-section';
+    const h = document.createElement('div');
+    h.className = 'settings-section-title';
+    h.textContent = title;
+    sec.appendChild(h);
+    rows.forEach(r => sec.appendChild(r));
+    return sec;
+  }
+
+  // ── Ratings ───────────────────────────────────────────────────────────────
+  body.appendChild(makeSection('Ratings', [
+    makeToggleRow('Explicit',          'explicit', 'tag-rating-explicit'),
+    makeToggleRow('Mature',            'mature',   'tag-rating-mature'),
+    makeToggleRow('Teen and Up',       'teen',     'tag-rating-teen'),
+    makeToggleRow('General Audiences', 'general',  'tag-rating-general'),
+    makeToggleRow('Not Rated',         'notrated', 'tag-rating-unrated'),
+  ]));
+
+  // ── Relationship Category ─────────────────────────────────────────────────
+  body.appendChild(makeSection('Relationship Category', [
+    makeToggleRow('M/M',   'M/M',   'tag-rel'),
+    makeToggleRow('F/M',   'F/M',   'tag-rel'),
+    makeToggleRow('Gen',   'Gen',   'tag-rel'),
+    makeToggleRow('F/F',   'F/F',   'tag-rel'),
+    makeToggleRow('Multi', 'Multi', 'tag-rel'),
+    makeToggleRow('Other', 'Other', 'tag-rel'),
+  ]));
+
+  // ── Publisher ─────────────────────────────────────────────────────────────
+  body.appendChild(makeSection('Publisher', [
+    makeToggleRow('Archive of Our Own', 'ao3', ''),
+  ]));
+
+  // ── Fandom ────────────────────────────────────────────────────────────────
+  const fandomRows = allFandoms().map(f => makeToggleRow(f, f, 'tag-fandom'));
+
+  // Extra fandom add row
+  const addRow = document.createElement('div');
+  addRow.className = 'extra-fandom-row';
+  const fi = document.createElement('input');
+  fi.id = 'extra-fandom-input';
+  fi.type = 'text';
+  fi.placeholder = 'Add fandom…';
+  fi.style.flex = '1';
+  const fa = document.createElement('button');
+  fa.className = 'action-btn';
+  fa.style.width = 'auto';
+  fa.style.padding = '6px 14px';
+  fa.textContent = 'Add';
+  const doAdd = () => {
+    const v = fi.value.trim();
+    if (!v || allFandoms().includes(v)) { fi.value = ''; return; }
+    settings.extraFandoms.push(v);
+    scheduleSave();
+    renderSettings();
+  };
+  fa.addEventListener('click', doAdd);
+  fi.addEventListener('keydown', e => { if (e.key === 'Enter') doAdd(); });
+  addRow.style.display = 'flex';
+  addRow.style.gap = '8px';
+  addRow.style.marginTop = '6px';
+  addRow.append(fi, fa);
+  fandomRows.push(addRow);
+
+  body.appendChild(makeSection('Fandom', fandomRows));
+
+  // ── Data ──────────────────────────────────────────────────────────────────
+  const dataRow = document.createElement('div');
+  dataRow.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;margin-top:4px;';
+  const clearBtn = document.createElement('button');
+  clearBtn.className = 'ghost-btn';
+  clearBtn.style.color = 'var(--danger)';
+  clearBtn.style.borderColor = 'var(--danger)';
+  clearBtn.textContent = 'Clear ELO & match history';
+  clearBtn.addEventListener('click', () => {
+    if (!confirm('Clear all ELO scores and match history? Read/tag data will be kept.')) return;
+    for (const id in state.userBooks) {
+      state.userBooks[id].elo = ELO_DEFAULT;
+      state.userBooks[id].matchCount = 0;
+    }
+    matchHistory.length = 0;
+    seenPairs.clear();
+    compareStats.total = 0;
+    scheduleSave(); renderAll();
+  });
+  const folderBtn = document.createElement('button');
+  folderBtn.className = 'ghost-btn';
+  folderBtn.textContent = 'Open data folder';
+  folderBtn.addEventListener('click', () => window.api.openDataFolder());
+  dataRow.append(clearBtn, folderBtn);
+  body.appendChild(makeSection('Data', [dataRow]));
 }
 
 // ── Debounce ───────────────────────────────────────────────────────────────
@@ -1264,18 +1538,6 @@ function attachEvents() {
     if (e.key === 'f' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault(); searchInput.focus();
     }
-  });
-
-  // Settings: max rating radio buttons
-  document.querySelectorAll('input[name="max-rating"]').forEach(radio => {
-    radio.addEventListener('change', function() {
-      if (!this.checked) return;
-      settings.maxRating = this.value;
-      scheduleSave();
-      recomputeVisible();
-      vsLastStart = -1;
-      renderAll();
-    });
   });
 }
 

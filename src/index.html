@@ -107,6 +107,7 @@
     <div id="rank-header">
       <h2>Which did you enjoy more?</h2>
       <p class="rank-sub">Click the book you preferred. ELO updates after every pick.</p>
+      <p id="compare-stats" style="font-size:.72rem;color:var(--dim);font-family:var(--mono);margin-top:.25rem;"></p>
     </div>
     <div id="rank-pair">
       <div class="rank-card" id="rank-a" data-id=""></div>
@@ -192,37 +193,9 @@
   <div id="view-settings" class="view">
     <header class="view-header">
       <h2 style="font-family:'Instrument Serif',serif;font-weight:400;font-size:1.6rem;margin:0;">Settings</h2>
+      <p style="color:var(--muted);font-size:.8rem;margin:.25rem 0 0;">Toggle off to hide from library, rankings, compare, and sort queue</p>
     </header>
-    <div id="settings-body">
-
-      <section class="settings-section">
-        <div class="settings-section-title">Content rating filter</div>
-        <p class="settings-section-desc">Show only works rated at or below the selected level. Applies to Library, Rankings, Compare, and Sort queue. Works with no rating tag are always shown.</p>
-        <div class="settings-radios">
-          <label class="settings-radio-row">
-            <input type="radio" name="max-rating" value="explicit" checked/>
-            <span class="settings-radio-swatch tag-rating-explicit">Explicit</span>
-            <span class="settings-radio-label">Show everything</span>
-          </label>
-          <label class="settings-radio-row">
-            <input type="radio" name="max-rating" value="mature"/>
-            <span class="settings-radio-swatch tag-rating-mature">Mature</span>
-            <span class="settings-radio-label">Hide Explicit works</span>
-          </label>
-          <label class="settings-radio-row">
-            <input type="radio" name="max-rating" value="teen"/>
-            <span class="settings-radio-swatch tag-rating-teen">Teen and Up</span>
-            <span class="settings-radio-label">Hide Explicit and Mature works</span>
-          </label>
-          <label class="settings-radio-row">
-            <input type="radio" name="max-rating" value="general"/>
-            <span class="settings-radio-swatch tag-rating-general">General Audiences</span>
-            <span class="settings-radio-label">Show only General Audiences works</span>
-          </label>
-        </div>
-      </section>
-
-    </div>
+    <div id="settings-body"></div>
   </div>
 
 </main>

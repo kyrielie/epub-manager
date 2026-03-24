@@ -198,8 +198,8 @@ ipcMain.handle('epub-sample', async (_, epubPath) => {
       })
       .sort((a, b) => a.entryName.localeCompare(b.entryName));
 
-    // Skip the first two entries (title/cover page, chapter header), use the third
-    const entry = entries[2] || entries[1] || entries[0];
+    // Try third entry first; fall back to first if fewer than 3 exist
+    const entry = entries[2] || entries[0];
     if (!entry) return null;
 
     const html = zip.readAsText(entry);
@@ -234,6 +234,12 @@ ipcMain.handle('epub-sample', async (_, epubPath) => {
   } catch (e) {
     return null;
   }
+});
+
+ipcMain.handle('open-data-folder', async () => {
+  const dir = require('path').dirname(APP_DATA_PATH);
+  shell.openPath(dir);
+  return true;
 });
 
 ipcMain.handle('cover-data-url', async (_, coverPath) => {

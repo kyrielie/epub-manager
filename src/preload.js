@@ -10,4 +10,5 @@ contextBridge.exposeInMainWorld('api', {
   openEpub:       (path)        => ipcRenderer.invoke('open-epub', path),
   coverDataUrl:   (path)        => ipcRenderer.invoke('cover-data-url', path),
   epubSample:     (path)        => ipcRenderer.invoke('epub-sample', path),
+  openDataFolder: ()            => ipcRenderer.invoke('open-data-folder'),
 });
