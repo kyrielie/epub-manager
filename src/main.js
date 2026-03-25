@@ -2,8 +2,12 @@
 
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
-const fs = require('fs');
-const os = require('os');
+const fs   = require('fs');
+const os   = require('os');
+
+// Heavy native deps — required once at startup, not inside IPC handlers
+const Database = require('better-sqlite3');
+const AdmZip   = require('adm-zip');
 
 // ── App data (custom tags, read status, ELO) stored separately from Calibre ──
 const APP_DATA_DIR = path.join(os.homedir(), '.epub-manager');
@@ -63,7 +67,6 @@ function saveAppData(data) {
 
 // ── Calibre metadata.db reader ────────────────────────────────────────────────
 function readCalibreDb(libraryPath) {
-  const Database = require('better-sqlite3');
   const dbPath = path.join(libraryPath, 'metadata.db');
 
   if (!fs.existsSync(dbPath)) {
@@ -163,11 +166,13 @@ function readCalibreDb(libraryPath) {
       description: descMap[row.id] || '',
       tags: otherTags,
       fandom,
-      series: seriesMap[row.id] ? seriesMap[row.id].name : '',
-      seriesIndex: row.series_index && row.series_index !== 1.0 ? row.series_index : null,
+      series: '',       // series books are excluded above; field kept for schema compatibility
+      seriesIndex: null,
       publisher: pubMap[row.id] || '',
       hasCover: !!row.has_cover,
-      coverPath: fs.existsSync(coverPath) ? coverPath : null,
+      // Calibre sets has_cover when it writes the file — trust the flag instead of
+      // calling fs.existsSync() for every book in the library.
+      coverPath: row.has_cover ? coverPath : null,
       epubPath,
       custom: Object.fromEntries(
         Object.entries(custom).filter(([k]) => !['fandom','universe'].includes(k))
@@ -176,12 +181,17 @@ function readCalibreDb(libraryPath) {
   });  // end .map()
 }  // end _read_from_sqlite
 
+// Module-level constants — defined once, not inside the function
+const GENRE_WORDS     = new Set([
+  'romance','action','sci-fi','fantasy','horror','mystery','thriller',
+  'comedy','drama','angst','fluff','hurt','comfort','complete','incomplete',
+  'english','spanish','french','german','slash','femslash','gen','het',
+]);
+const GENRE_WORDS_ARR = [...GENRE_WORDS]; // pre-spread for substring iteration
+
 function looksLikeFandom(tag) {
-  const genres = ['romance','action','sci-fi','fantasy','horror','mystery','thriller',
-    'comedy','drama','angst','fluff','hurt','comfort','complete','incomplete',
-    'english','spanish','french','german','slash','femslash','gen','het'];
   const tl = tag.toLowerCase();
-  if (genres.some(g => tl.includes(g))) return false;
+  if (GENRE_WORDS_ARR.some(g => tl.includes(g))) return false;
   if (tag.includes('/') && tag.length > 3) return true;
   return false;
 }
@@ -225,8 +235,7 @@ ipcMain.handle('open-epub', async (_, epubPath) => {
 ipcMain.handle('epub-sample', async (_, epubPath) => {
   if (!epubPath || !fs.existsSync(epubPath)) return null;
   try {
-    // EPUBs are zips — find the 2nd content HTML document and extract plain text
-    const AdmZip = require('adm-zip');
+    // EPUBs are zips — find a content HTML document and extract plain text
     const zip = new AdmZip(epubPath);
     const entries = zip.getEntries()
       .filter(e => {

@@ -37,6 +37,10 @@
         <svg viewBox="0 0 20 20"><path d="M3 5h14M3 10h9M3 15h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/><path d="M16 12l2 2-2 2M18 14h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
         Sort
       </button>
+      <button class="nav-btn" data-view="triage">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M10 3l1.8 3.6 4 .6-2.9 2.8.7 4L10 12l-3.6 2 .7-4L4.2 7.2l4-.6L10 3z"/></svg>
+        Triage
+      </button>
       <button class="nav-btn" data-view="history">
         <svg viewBox="0 0 20 20"><path d="M10 4v6l4 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/><path d="M3.5 10a6.5 6.5 0 1 1 1.1 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/><path d="M3.5 6v4h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
         History
@@ -164,21 +168,21 @@
     <div id="sort-arena">
       <div id="sort-hint-left" class="sort-hint">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M19 12H5M5 12l7-7M5 12l7 7"/></svg>
-        <span>Skip · unread</span>
-        <span class="sort-hint-key">Space</span>
+        <span>Unread</span>
+        <span class="sort-hint-key">←</span>
       </div>
       <div id="sort-card-wrap">
         <div id="sort-card"></div>
       </div>
       <div id="sort-hint-right" class="sort-hint">
-        <span>Mark read</span>
+        <span>Read</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M5 12h14M14 5l7 7-7 7"/></svg>
-        <span class="sort-hint-key">Enter</span>
+        <span class="sort-hint-key">→</span>
       </div>
     </div>
     <div id="sort-tag-btns">
-      <button class="sort-tag-btn later"  id="btn-sort-later">    Later  <kbd>L</kbd></button>
-      <button class="sort-tag-btn reject" id="btn-sort-reject">   Reject <kbd>X</kbd></button>
+      <button class="sort-tag-btn later"  id="btn-sort-later">    Later  <kbd>↑</kbd></button>
+      <button class="sort-tag-btn reject" id="btn-sort-reject">   Reject <kbd>↓</kbd></button>
     </div>
     <div id="sort-open-btns"></div>
     <div id="sort-empty">
@@ -189,6 +193,54 @@
     <div id="sort-no-books">
       <div class="empty-icon">📚</div>
       <p>Load a library first.</p>
+    </div>
+  </div>
+
+  <!-- Triage / quality-rating view -->
+  <div id="view-triage" class="view">
+    <div id="triage-view-header">
+      <div id="triage-stats-row">
+        <span class="sort-stat"><span class="sort-stat-n" id="ts-remaining">—</span><span class="sort-stat-l">remaining</span></span>
+        <span class="sort-stat"><span class="sort-stat-n" id="ts-great">—</span><span class="sort-stat-l">really good</span></span>
+        <span class="sort-stat"><span class="sort-stat-n" id="ts-good">—</span><span class="sort-stat-l">good</span></span>
+        <span class="sort-stat"><span class="sort-stat-n" id="ts-average">—</span><span class="sort-stat-l">average</span></span>
+        <span class="sort-stat"><span class="sort-stat-n" id="ts-bad">—</span><span class="sort-stat-l">bad</span></span>
+      </div>
+    </div>
+    <div id="triage-arena">
+      <div id="triage-hint-left" class="sort-hint triage-hint-bad">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M19 12H5M5 12l7-7M5 12l7 7"/></svg>
+        <span>Bad</span>
+        <span class="sort-hint-key">←</span>
+      </div>
+      <div id="triage-card-wrap">
+        <div id="triage-card"></div>
+      </div>
+      <div id="triage-hint-right" class="sort-hint triage-hint-good">
+        <span>Good</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M5 12h14M14 5l7 7-7 7"/></svg>
+        <span class="sort-hint-key">→</span>
+      </div>
+    </div>
+    <div id="triage-updown-hints">
+      <div class="triage-hint-label triage-hint-great">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+        Really good <span class="sort-hint-key">↑</span>
+      </div>
+      <div class="triage-hint-label triage-hint-average">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+        Average <span class="sort-hint-key">↓</span>
+      </div>
+    </div>
+    <div id="triage-open-btns"></div>
+    <div id="triage-empty">
+      <div class="empty-icon">★</div>
+      <p>All read books rated!</p>
+      <button class="action-btn" id="btn-triage-restart" style="max-width:200px;margin-top:.5rem">Rate again</button>
+    </div>
+    <div id="triage-no-books">
+      <div class="empty-icon">📚</div>
+      <p>Mark some books as read first.</p>
     </div>
   </div>
 

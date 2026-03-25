@@ -874,6 +874,129 @@ nav { display: flex; flex-direction: column; gap: 2px; padding: 0 .5rem; -webkit
 /* Sort hint arrows for up/down */
 #sort-tag-btns { display: flex; gap: 8px; flex-shrink: 0; align-items: center; }
 
+
+/* ── Sort tab: arrow-key labels (updated from Space/Enter) ──────────────── */
+/* (Labels are updated in HTML; no CSS change needed beyond existing styles) */
+
+/* ── Triage / quality-rating view ────────────────────────────────────────── */
+#view-triage {
+  align-items: center; justify-content: flex-start;
+  gap: .6rem; padding: .75rem 1.5rem 1rem; overflow: hidden;
+}
+
+#triage-view-header { width: 100%; flex-shrink: 0; }
+#triage-stats-row {
+  display: flex; gap: 0; width: 100%;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden;
+}
+
+#triage-arena {
+  display: flex; align-items: stretch; justify-content: center;
+  gap: 0; width: 100%; max-width: 680px;
+  flex: 1; min-height: 0;
+}
+
+#triage-card-wrap {
+  flex: 1; min-width: 0; min-height: 0; position: relative; overflow: hidden;
+}
+
+#triage-card {
+  position: absolute; inset: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1.25rem 1.5rem;
+  display: flex; flex-direction: column; gap: 8px;
+  cursor: pointer;
+  overflow-y: auto;
+  will-change: transform, opacity;
+}
+#triage-card::-webkit-scrollbar { width: 4px; }
+#triage-card::-webkit-scrollbar-thumb { background: var(--surface3); }
+
+/* Direction hover tint overlay */
+#triage-card::before {
+  content: ''; position: absolute; inset: 0; border-radius: 14px;
+  pointer-events: none; opacity: 0; transition: opacity .15s;
+}
+#triage-card.triage-hint-left  { border-color: #c06060; }
+#triage-card.triage-hint-right { border-color: var(--read-fg); }
+#triage-card.triage-hint-left::before  { background: rgba(200,80,80,.06);  opacity: 1; }
+#triage-card.triage-hint-right::before { background: rgba(90,200,120,.06); opacity: 1; }
+
+/* Triage card reuses slideLeft/Right/Up/Down/In from sort card */
+#triage-card.anim-left  { animation: slideLeft  .3s cubic-bezier(.4,0,.6,1) forwards; }
+#triage-card.anim-right { animation: slideRight .3s cubic-bezier(.4,0,.6,1) forwards; }
+#triage-card.anim-up    { animation: slideUp    .3s cubic-bezier(.4,0,.6,1) forwards; }
+#triage-card.anim-down  { animation: slideDown  .3s cubic-bezier(.4,0,.6,1) forwards; }
+#triage-card.anim-in    { animation: slideIn    .2s cubic-bezier(.2,0,.3,1) forwards; }
+
+/* Zone labels — bad (left) red, good (right) green */
+#triage-card .sort-zone-label.left {
+  color: #c07070; background: rgba(200,80,80,.1); border-color: #c06060;
+}
+#triage-card .triage-zone-good {
+  color: var(--read-fg); background: var(--read-bg); border-color: var(--read-fg);
+}
+#triage-card.triage-hint-left  .sort-zone-label.left  { opacity: 1; }
+#triage-card.triage-hint-right .triage-zone-good      { opacity: 1; }
+
+/* Up/down hint strip below the card */
+#triage-updown-hints {
+  display: flex; gap: 2.5rem; align-items: center; justify-content: center;
+  flex-shrink: 0; font-size: .72rem; color: var(--dim);
+  font-family: var(--sans); user-select: none;
+}
+.triage-hint-label {
+  display: flex; align-items: center; gap: 5px;
+}
+.triage-hint-label svg { width: 14px; height: 14px; flex-shrink: 0; }
+.triage-hint-great   { color: #f0c040; }   /* gold — really good */
+.triage-hint-average { color: var(--muted); } /* muted — average */
+
+/* Sidebar direction hint colouring */
+.triage-hint-bad  { color: #c07070; }
+.triage-hint-good { color: var(--read-fg); }
+
+/* Empty / no-books states */
+#triage-empty, #triage-no-books {
+  display: none; flex-direction: column; align-items: center;
+  gap: 10px; text-align: center; color: var(--muted);
+}
+#triage-empty.visible, #triage-no-books.visible { display: flex; }
+
+#triage-open-btns {
+  display: flex; gap: 10px; justify-content: center; flex-shrink: 0;
+}
+
+/* ── Quality star indicator ───────────────────────────────────────────────── */
+.quality-star {
+  font-size: .7rem; flex-shrink: 0; pointer-events: none; user-select: none;
+  margin-left: 5px;
+}
+.quality-star-great { color: #f0c040; }   /* gold */
+.quality-star-good  { color: #80c8a0; }   /* soft green */
+
+/* In book-title-line (library rows) */
+.book-title-line .quality-star { vertical-align: middle; }
+
+/* Card title row wrapper */
+.card-title-row {
+  display: flex; align-items: flex-start; gap: 4px; flex-wrap: nowrap;
+}
+.card-title-row .rank-card-title { flex: 1; min-width: 0; }
+.card-title-row .quality-star { margin-top: .3rem; font-size: .9rem; }
+
+/* In rankings list rank-title */
+.rank-title .quality-star { font-size: .68rem; vertical-align: middle; }
+
+/* ── History badge quality variants ──────────────────────────────────────── */
+.history-badge.quality-great { background: rgba(240,192,64,.18); color: #f0c040; }
+.history-badge.quality-good  { background: rgba(90,200,120,.12); color: #80c8a0; }
+.history-badge.quality-avg   { background: var(--surface3);      color: var(--muted); }
+.history-badge.quality-bad   { background: rgba(200,80,80,.12);  color: #c07070; }
+
 /* ── Compare: swipe animations ───────────────────────────────────────────── */
 @keyframes swipeLeft {
   to { transform: translateX(-130%) rotate(-6deg); opacity: 0; }

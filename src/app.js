@@ -58,44 +58,41 @@ function allFandoms() {
   return [...BUILTIN_FANDOMS, ...(settings.extraFandoms || [])];
 }
 
+// Pre-normalised fandom cache — rebuilt whenever allFandoms() would change.
+let _normFandomCache = null;
+function normFandomList() {
+  if (!_normFandomCache) {
+    _normFandomCache = allFandoms().map(f => ({ orig: f, norm: normStr(f) }));
+  }
+  return _normFandomCache;
+}
+function invalidateFandomCache() { _normFandomCache = null; }
+
 // Fuzzy: normalize both sides, check substring containment both ways
 function normStr(s) { return s.toLowerCase().replace(/[^a-z0-9]/g, ''); }
 
-function detectFandoms(book) {
+// Returns { fandoms: string[], tagSet: Set<string> } in one pass — avoids iterating twice.
+function detectFandomInfo(book) {
   const tags = [...(book.tags || []), ...(book.customTags || [])];
-  const fandomList = allFandoms();
-  const found = [];
+  const fandomList = normFandomList();
+  const fandoms = [];
+  const tagSet  = new Set();
   for (const tag of tags) {
     const tn = normStr(tag);
-    for (const f of fandomList) {
-      const fn = normStr(f);
-      // Tag contains fandom name OR fandom name contains tag (for short tags like "HP")
+    for (const { orig, norm: fn } of fandomList) {
       if (fn.length >= 3 && (tn.includes(fn) || fn.includes(tn))) {
-        if (!found.includes(f)) found.push(f);
+        if (!fandoms.includes(orig)) fandoms.push(orig);
+        tagSet.add(tag);
         break;
       }
     }
   }
-  return found;
+  return { fandoms, tagSet };
 }
 
-// Returns the set of raw tag strings that matched as fandoms (for filtering them out of the tag row)
-function fandomTagSet(book) {
-  const tags = [...(book.tags || []), ...(book.customTags || [])];
-  const fandomList = allFandoms();
-  const matched = new Set();
-  for (const tag of tags) {
-    const tn = normStr(tag);
-    for (const f of fandomList) {
-      const fn = normStr(f);
-      if (fn.length >= 3 && (tn.includes(fn) || fn.includes(tn))) {
-        matched.add(tag);
-        break;
-      }
-    }
-  }
-  return matched;
-}
+// Convenience wrappers for callers that only need one result
+function detectFandoms(book) { return detectFandomInfo(book).fandoms; }
+function fandomTagSet(book)  { return detectFandomInfo(book).tagSet;  }
 
 // ── Publisher detection ─────────────────────────────────────────────────────
 // Returns a normalised key and display label for a publisher string.
@@ -172,13 +169,39 @@ function bookRating(book) {
 }
 
 // ── Unified content filter ──────────────────────────────────────────────────
-function bookPassesRatingFilter(book) { return bookPassesContentFilter(book); }
+// _filterCtx caches values derived from settings.hiddenFilters that are constant
+// across an entire filter pass (recomputeVisible, renderStats, etc.).
+// Call refreshFilterCtx() once before any batch of bookPassesContentFilter calls.
+// It is also called automatically on the first call if stale.
+let _filterCtx = null;
+
+function refreshFilterCtx() {
+  const hf = settings.hiddenFilters;
+  const hasAnyFilter = Object.keys(hf).length > 0;
+  _filterCtx = {
+    hasAnyFilter,
+    hideAo3:            !!hf['ao3'],
+    hideUnknownFandom:  !!hf['unknown-fandom'],
+    anyFandomHidden:    hasAnyFilter && normFandomList().some(f => !!hf[f.orig]),
+    // Pre-build Set of hidden publisher keys for O(1) lookup
+    hiddenPubKeys:      new Set(
+      (settings.detectedPublishers || []).map(p => p.key).filter(k => !!hf[k])
+    ),
+    // Populated lazily after the first full filter pass (see recomputeVisible)
+    passedCount: -1,
+  };
+}
+
+function invalidateFilterCtx() { _filterCtx = null; }
 
 function bookPassesContentFilter(book) {
+  if (!_filterCtx) refreshFilterCtx();
+  const ctx = _filterCtx;
+
   // Always hide books with no publisher
   if (!(book.publisher || '').trim()) return false;
 
-  if (!Object.keys(settings.hiddenFilters).length) return true;
+  if (!ctx.hasAnyFilter) return true;
 
   // Rating
   const rating = bookRating(book);
@@ -189,21 +212,16 @@ function bookPassesContentFilter(book) {
   if (rel && isHidden(rel)) return false;
 
   // Publisher (AO3 special-cased, then other detected publishers)
-  if (isHidden('ao3') && isAo3Book(book)) return false;
-  for (const { key } of (settings.detectedPublishers || [])) {
-    if (isHidden(key) && (book.publisher || '').trim() === key) return false;
-  }
+  if (ctx.hideAo3 && isAo3Book(book)) return false;
+  if (ctx.hiddenPubKeys.size && ctx.hiddenPubKeys.has((book.publisher || '').trim())) return false;
 
-  // Fandom — applies to ALL books (not just AO3).
-  // A book is hidden when every one of its detected fandoms is toggled off.
+  // Fandom — a book is hidden when every one of its detected fandoms is toggled off.
   // Books with no detected fandom can be hidden via the 'unknown-fandom' key.
-  const anyFandomHidden = Object.keys(settings.hiddenFilters).some(k => allFandoms().includes(k));
-  const unknownFandomHidden = isHidden('unknown-fandom');
-  if (anyFandomHidden || unknownFandomHidden) {
+  if (ctx.anyFandomHidden || ctx.hideUnknownFandom) {
     const fandoms = detectFandoms(book);
     if (fandoms.length === 0) {
-      if (unknownFandomHidden) return false;
-    } else if (anyFandomHidden && fandoms.every(f => isHidden(f))) {
+      if (ctx.hideUnknownFandom) return false;
+    } else if (ctx.anyFandomHidden && fandoms.every(f => isHidden(f))) {
       return false;
     }
   }
@@ -227,19 +245,31 @@ function eloUpdate(wR, lR) {
 // ── User records ───────────────────────────────────────────────────────────
 function getUser(id) {
   if (!state.userBooks[id])
-    state.userBooks[id] = { read: false, customTags: [], elo: ELO_DEFAULT, matchCount: 0 };
+    state.userBooks[id] = { read: false, customTags: [], elo: ELO_DEFAULT, matchCount: 0, quality: null };
   return state.userBooks[id];
 }
 
+// ── mergedBook cache ───────────────────────────────────────────────────────
+// Avoids allocating a fresh object on every vsRender tick for each visible row.
+// Invalidated by bumping _mergeGen whenever userBooks data changes.
+let _mergeGen     = 0;
+const _mergeCache = {};
+function invalidateMergeCache() { _mergeGen++; }
+
 function mergedBook(book) {
+  const cached = _mergeCache[book.id];
+  if (cached && cached._gen === _mergeGen) return cached;
   const u = getUser(book.id);
-  return {
+  const m = {
+    _gen: _mergeGen,
     id: book.id, title: book.title, author: book.author,
     description: book.description, tags: book.tags, fandom: book.fandom,
     series: book.series, seriesIndex: book.seriesIndex,
     publisher: book.publisher, epubPath: book.epubPath, custom: book.custom,
-    read: u.read, customTags: u.customTags, elo: u.elo, matchCount: u.matchCount,
+    read: u.read, customTags: u.customTags, elo: u.elo, matchCount: u.matchCount, quality: u.quality || null,
   };
+  _mergeCache[book.id] = m;
+  return m;
 }
 
 // ── Search index ───────────────────────────────────────────────────────────
@@ -268,7 +298,7 @@ function recomputeVisible() {
     if (filter === 'later'    && !(u.customTags && u.customTags.includes('later')))    continue;
     if (filter === 'rejected' && !(u.customTags && u.customTags.includes('rejected'))) continue;
 
-    if (!bookPassesRatingFilter(b)) continue;
+    if (!bookPassesContentFilter(b)) continue;
 
     if (q) {
       const inIndex  = idx[i].includes(q);
@@ -291,6 +321,12 @@ function recomputeVisible() {
   // title sort: already in Calibre DB order, no re-sort needed
 
   state.visibleList = result;
+
+  // Cache the content-filtered total so renderStats never needs to re-scan the library.
+  // When filter=all and no search, visibleList IS the content-filtered set.
+  if (filter === 'all' && !q) {
+    if (_filterCtx) _filterCtx.passedCount = result.length;
+  }
 }
 
 // ── Persistence ────────────────────────────────────────────────────────────
@@ -311,7 +347,11 @@ function scheduleSave() {
 async function boot() {
   // First load: pass empty string to get the index/last-used settings
   const init = await window.api.getAppData('');
-  if (init.settings) Object.assign(settings, init.settings);
+  if (init.settings) {
+    Object.assign(settings, init.settings);
+    invalidateFilterCtx();
+    invalidateFandomCache();
+  }
   attachEvents();
   if (init.libraryPath) {
     await loadLibrary(init.libraryPath);
@@ -340,7 +380,10 @@ async function loadLibrary(libPath) {
   state.bookMap      = {};
   result.books.forEach(b => { state.bookMap[b.id] = b; getUser(b.id); });
   state.searchIndex  = buildSearchIndex(result.books);
-  detectPublishers(); // auto-detect publishers from loaded library
+  detectPublishers();
+  invalidateMergeCache();
+  invalidateFandomCache();
+  invalidateFilterCtx();
   seenPairs.clear();
   rankPair = null;
   recomputeVisible();
@@ -442,8 +485,7 @@ function makeBookRow(book) {
   // Line 2: fandom tags + relationship — all books, always above the tags line
   const fandomLine = document.createElement('div');
   fandomLine.className = 'book-fandom-line';
-  const bookFandomSet = fandomTagSet(book); // raw tag strings that matched a fandom
-  const bookFandoms   = detectFandoms(book);
+  const { fandoms: bookFandoms, tagSet: bookFandomSet } = detectFandomInfo(book);
   bookFandoms.forEach(f => fandomLine.appendChild(makeTag(f, 'tag-fandom', filterByTag)));
   const rel = detectRelationship(book);
   if (rel) fandomLine.appendChild(makeTag(rel, 'tag-rel'));
@@ -488,6 +530,15 @@ function makeBookRow(book) {
 
   toggleWrap.append(toggleInput, toggleTrack);
 
+  // Quality star (great = gold ★★, good = green ★)
+  if (book.quality === 'great' || book.quality === 'good') {
+    const star = document.createElement('span');
+    star.className = 'quality-star quality-star-' + book.quality;
+    star.textContent = book.quality === 'great' ? '★★' : '★';
+    star.title = book.quality === 'great' ? 'Really good' : 'Good';
+    info.querySelector('.book-title-line').appendChild(star);
+  }
+
   row.append(info, toggleWrap);
   row.addEventListener('click', () => openDetail(book.id));
   return row;
@@ -522,13 +573,13 @@ function makeTag(text, cls, onClick) {
   return t;
 }
 
-// ── Tag filter ─────────────────────────────────────────────────────────────
-function filterByTag(tag) {
+// ── Shared search-setter (used by tag clicks, author clicks, etc.) ──────────
+function setSearch(value) {
   const searchInput = document.getElementById('search-input');
   const searchClear = document.getElementById('search-clear');
-  searchInput.value = tag;
-  state.search = tag;
-  searchClear.classList.add('visible');
+  searchInput.value = value;
+  state.search      = value;
+  searchClear.classList.toggle('visible', !!value);
   state.filter = 'all';
   document.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
   document.querySelector('.pill[data-filter="all"]').classList.add('active');
@@ -537,6 +588,9 @@ function filterByTag(tag) {
   switchView('library');
   renderAll();
 }
+
+function filterByTag(tag)       { setSearch(tag);    }
+function filterByAuthor(author) { setSearch(author); }
 
 // ── Detail panel ───────────────────────────────────────────────────────────
 function openDetail(id) {
@@ -610,6 +664,7 @@ function addCustomTag(id) {
   const u = getUser(id);
   if (!u.customTags.includes(tag)) {
     u.customTags.push(tag);
+    invalidateMergeCache();
     scheduleSave();
     vsRender();
     if (state.detailId === id) renderCustomTags(mergedBook(state.bookMap[id]));
@@ -619,6 +674,7 @@ function addCustomTag(id) {
 
 function removeCustomTag(id, tag) {
   getUser(id).customTags = getUser(id).customTags.filter(t => t !== tag);
+  invalidateMergeCache();
   scheduleSave();
   vsRender();
   if (state.detailId === id) renderCustomTags(mergedBook(state.bookMap[id]));
@@ -627,27 +683,11 @@ function removeCustomTag(id, tag) {
 function toggleRead(id) {
   const u = getUser(id);
   u.read = !u.read;
+  invalidateMergeCache();
   scheduleSave();
   recomputeVisible();
   renderAll();
   if (state.detailId === id) openDetail(id);
-}
-
-// ── Author filter ───────────────────────────────────────────────────────────
-function filterByAuthor(author) {
-  const searchInput = document.getElementById('search-input');
-  const searchClear = document.getElementById('search-clear');
-  searchInput.value = author;
-  state.search = author;
-  searchClear.classList.add('visible');
-  // Reset read filter to all so all books by this author show
-  state.filter = 'all';
-  document.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
-  document.querySelector('.pill[data-filter="all"]').classList.add('active');
-  recomputeVisible();
-  vsLastStart = -1;
-  switchView('library');
-  renderAll();
 }
 
 // ── Stats ──────────────────────────────────────────────────────────────────
@@ -659,9 +699,15 @@ function renderStats() {
     if (u.matchCount > 0) ranked++;
   }
 
-  const total    = state.calibreBooks.length;
-  const filtered = state.calibreBooks.filter(b => bookPassesContentFilter(b)).length;
-  const totalEl  = document.getElementById('stat-total');
+  const total   = state.calibreBooks.length;
+  // Use the count cached by recomputeVisible (filter=all, no search pass).
+  // Only fall back to a full scan if the cache is cold (e.g. first stat render
+  // before any recomputeVisible has run with filter=all).
+  const cached  = _filterCtx ? _filterCtx.passedCount : -1;
+  const filtered = cached >= 0
+    ? cached
+    : state.calibreBooks.filter(b => bookPassesContentFilter(b)).length;
+  const totalEl = document.getElementById('stat-total');
 
   if (filtered < total) {
     // Filters active — show filtered count and dim the total as context
@@ -689,8 +735,7 @@ function renderStats() {
 
 // ── Rankings ───────────────────────────────────────────────────────────────
 function renderRankings() {
-  const readBooks = state.calibreBooks
-    .filter(b => getUser(b.id).read && bookPassesRatingFilter(b))
+  const readBooks = getReadBooks()
     .map(b => mergedBook(b))
     .sort((a, b) => b.elo - a.elo);
 
@@ -859,10 +904,12 @@ function renderRankings() {
     const pct = Math.round(((book.elo - minElo) / range) * 100);
     const row = document.createElement('div');
     row.className = 'rank-row';
+    const starHtml = book.quality === 'great' ? ' <span class="quality-star quality-star-great" title="Really good">★★</span>'
+      : book.quality === 'good' ? ' <span class="quality-star quality-star-good" title="Good">★</span>' : '';
     row.innerHTML =
       '<div class="rank-num' + (i < 3 ? ' top' : '') + '">#' + (i + 1) + '</div>' +
       '<div class="rank-bar-wrap">' +
-        '<div class="rank-title">' + escHtml(book.title) + '</div>' +
+        '<div class="rank-title">' + escHtml(book.title) + starHtml + '</div>' +
         '<div class="rank-author-line">by ' + escHtml(book.author) + '</div>' +
         '<div class="rank-bar-bg"><div class="rank-bar-fill" style="width:' + pct + '%"></div></div>' +
       '</div>' +
@@ -884,18 +931,29 @@ function buildCardContent(el, book, opts) {
   // opts: { showElo, samplePlaceholder }
   el.innerHTML = '';
 
+  const titleWrap = document.createElement('div');
+  titleWrap.className = 'card-title-row';
+
   const title = document.createElement('div');
   title.className = 'rank-card-title';
   title.textContent = book.title;
+  titleWrap.appendChild(title);
+
+  if (book.quality === 'great' || book.quality === 'good') {
+    const star = document.createElement('span');
+    star.className = 'quality-star quality-star-' + book.quality;
+    star.textContent = book.quality === 'great' ? '★★' : '★';
+    star.title = book.quality === 'great' ? 'Really good' : 'Good';
+    titleWrap.appendChild(star);
+  }
 
   const author = document.createElement('div');
   author.className = 'rank-card-author';
   author.textContent = book.author;
 
   // Fandom row — all books, always shown above the generic tags row
-  const fandoms   = detectFandoms(book);
-  const fandomSet = fandomTagSet(book);
-  const rel       = detectRelationship(book);
+  const { fandoms, tagSet: fandomSet } = detectFandomInfo(book);
+  const rel = detectRelationship(book);
 
   const metaRow = document.createElement('div');
   metaRow.className = 'card-meta-row';
@@ -923,23 +981,16 @@ function buildCardContent(el, book, opts) {
   sampleEl.className = 'sort-card-sample';
   sampleEl.textContent = opts.samplePlaceholder || '';
 
-  if (settings.showPublisher && book.publisher) {
-    const pub = document.createElement('div');
-    pub.className = 'sort-card-publisher';
-    pub.textContent = book.publisher;
-    el.appendChild(pub);  // will be re-ordered below
-  }
-
-  const children = [title, author];
+  const children = [titleWrap, author];
   if (metaRow.children.length) children.push(metaRow);
   if (book.tags.length || book.customTags.length) children.push(tagsEl);
   if (book.description) children.push(divider, desc);
   children.push(divider2, sampleEl);
   if (settings.showPublisher && book.publisher) {
-    const pub2 = document.createElement('div');
-    pub2.className = 'sort-card-publisher';
-    pub2.textContent = book.publisher;
-    children.push(pub2);
+    const pub = document.createElement('div');
+    pub.className = 'sort-card-publisher';
+    pub.textContent = book.publisher;
+    children.push(pub);
   }
   if (opts.showElo) {
     const eloEl = document.createElement('div');
@@ -957,8 +1008,36 @@ let rankPair    = null;
 let nextPair    = null;   // preloaded — ready to show immediately after a pick
 let compareAnimating = false;
 
+// Quality levels — null = unrated, 'great' | 'good' | 'average' | 'bad'
+function bookQuality(id) { return (state.userBooks[id] || {}).quality || null; }
+
+// Helpers that centralise the repeated filter expressions used across views
+
+// For ELO/rankings: only great or good quality books participate
+function getReadBooks() {
+  return state.calibreBooks.filter(b => {
+    const u = state.userBooks[b.id];
+    if (!u || !u.read || !bookPassesContentFilter(b)) return false;
+    return u.quality === 'great' || u.quality === 'good';
+  });
+}
+
+// All read books (regardless of quality rating) — used for triage queue
+function getAllReadBooks() {
+  return state.calibreBooks.filter(b => {
+    const u = state.userBooks[b.id];
+    return u && u.read && bookPassesContentFilter(b);
+  });
+}
+
+function getSortQueue() {
+  return state.calibreBooks
+    .filter(b => !getUser(b.id).read && !b.series && bookPassesContentFilter(b))
+    .map(b => b.id);
+}
+
 function updateRankPair() {
-  const readBooks = state.calibreBooks.filter(b => getUser(b.id).read && bookPassesRatingFilter(b));
+  const readBooks = getReadBooks();
   const empty   = document.getElementById('rank-empty');
   const pair    = document.getElementById('rank-pair');
   const actions = document.getElementById('rank-actions');
@@ -982,9 +1061,10 @@ function updateRankPair() {
   }
 }
 
-function selectNextBook(readBooks, excludeId) {
-  const sorted = [...readBooks].sort((a, b) => getUser(a.id).matchCount - getUser(b.id).matchCount);
-  const pool   = sorted.slice(0, Math.max(4, Math.ceil(sorted.length * 0.3)));
+// Pick a book biased toward those with fewer matches; pool = bottom 30% by match count.
+// Takes a pre-sorted array (ascending matchCount) to avoid re-sorting on retries.
+function selectNextBook(sortedPool, excludeId) {
+  const pool = sortedPool.slice(0, Math.max(4, Math.ceil(sortedPool.length * 0.3)));
   let candidate, attempts = 0;
   do {
     candidate = pool[Math.floor(Math.random() * pool.length)];
@@ -996,9 +1076,11 @@ function selectNextBook(readBooks, excludeId) {
 
 function selectPair(readBooks) {
   if (readBooks.length < 2) return null;
+  // Sort once here; pass the sorted array into selectNextBook to avoid repeated sorts.
+  const sorted = [...readBooks].sort((a, b) => getUser(a.id).matchCount - getUser(b.id).matchCount);
   let a, b, attempts = 0;
   do {
-    a = selectNextBook(readBooks, null);
+    a = selectNextBook(sorted, null);
     b = readBooks[Math.floor(Math.random() * readBooks.length)];
     attempts++;
     if (attempts > 200) { seenPairs.clear(); break; }
@@ -1008,7 +1090,7 @@ function selectPair(readBooks) {
 }
 
 function pickNewPair(readBooks) {
-  if (!readBooks) readBooks = state.calibreBooks.filter(b => getUser(b.id).read && bookPassesRatingFilter(b));
+  if (!readBooks) readBooks = getReadBooks();
   if (readBooks.length < 2) return;
   const pair = selectPair(readBooks);
   if (!pair) return;
@@ -1018,7 +1100,7 @@ function pickNewPair(readBooks) {
 }
 
 function preloadNextPair(readBooks) {
-  if (!readBooks) readBooks = state.calibreBooks.filter(b => getUser(b.id).read && bookPassesRatingFilter(b));
+  if (!readBooks) readBooks = getReadBooks();
   if (readBooks.length < 2) { nextPair = null; return; }
   const pair = selectPair(readBooks);
   if (!pair) { nextPair = null; return; }
@@ -1103,6 +1185,7 @@ function recordWin(winnerId) {
   const { winner, loser } = eloUpdate(uW.elo, uL.elo);
   uW.elo = winner; uW.matchCount++;
   uL.elo = loser;  uL.matchCount++;
+  invalidateMergeCache();
 
   matchHistory.unshift({
     winnerId, loserId,
@@ -1156,8 +1239,7 @@ function recordWin(winnerId) {
     }
 
     renderAll();
-    const readBooks = state.calibreBooks.filter(b => getUser(b.id).read && bookPassesRatingFilter(b));
-    preloadNextPair(readBooks);
+    preloadNextPair(getReadBooks());
     if (document.getElementById('view-history').classList.contains('active')) renderHistory();
   }, EXIT_MS);
 }
@@ -1176,6 +1258,9 @@ function revertMatch(index) {
     } else if (entry.action === 'rejected') {
       u.customTags = u.customTags.filter(t => t !== 'rejected');
     }
+  } else if (entry.type === 'triage-quality') {
+    // Undo quality rating
+    getUser(entry.bookId).quality = null;
   } else {
     // Undo ELO match
     const uW = getUser(entry.winnerId);
@@ -1185,6 +1270,7 @@ function revertMatch(index) {
   }
 
   matchHistory.splice(index, 1);
+  invalidateMergeCache();
   scheduleSave();
   renderAll();
   renderHistory();
@@ -1223,6 +1309,21 @@ function renderHistory() {
             '<span class="history-badge ' + cls + '">' + lbl + '</span>' +
             '<span class="history-book-title">' + escHtml(book.title) + '</span>' +
             '<span class="history-elo-change" style="color:var(--dim)">triage</span>' +
+          '</div>' +
+        '</div>' +
+        '<button class="history-revert ghost-btn">Revert</button>';
+    } else if (entry.type === 'triage-quality') {
+      const book = state.bookMap[entry.bookId];
+      if (!book) return;
+      const QCLS = { great: 'quality-great', good: 'quality-good', average: 'quality-avg', bad: 'quality-bad' };
+      const QLBL = { great: '★★ Really good', good: '★ Good', average: 'Average', bad: 'Bad' };
+      row.innerHTML =
+        '<div class="history-time">' + escHtml(timeStr) + '</div>' +
+        '<div class="history-pair">' +
+          '<div class="history-winner">' +
+            '<span class="history-badge ' + (QCLS[entry.quality] || '') + '">' + (QLBL[entry.quality] || entry.quality) + '</span>' +
+            '<span class="history-book-title">' + escHtml(book.title) + '</span>' +
+            '<span class="history-elo-change" style="color:var(--dim)">quality</span>' +
           '</div>' +
         '</div>' +
         '<button class="history-revert ghost-btn">Revert</button>';
@@ -1265,10 +1366,8 @@ const sortState = {
 };
 
 function initSortQueue() {
-  // Queue = all unread, non-series books, shuffled
-  sortState.queue = state.calibreBooks
-    .filter(b => !getUser(b.id).read && !b.series && bookPassesRatingFilter(b))
-    .map(b => b.id);
+  // Queue = all unread, non-series books passing content filters, shuffled
+  sortState.queue = getSortQueue();
   for (let i = sortState.queue.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [sortState.queue[i], sortState.queue[j]] = [sortState.queue[j], sortState.queue[i]];
@@ -1351,8 +1450,8 @@ const triageSession = {
   countStart: 0,      // triaged count at session start (to compute pace)
 };
 
+// Snapshot of total triage decisions at a point in time (used only for session-start baseline).
 function triageCount() {
-  // Total decisions made = read + tagged-later + tagged-rejected
   let n = 0;
   for (const id in state.userBooks) {
     const u = state.userBooks[id];
@@ -1371,7 +1470,7 @@ async function renderSortCard(id) {
   // Zone labels
   const labelLeft = document.createElement('div');
   labelLeft.className = 'sort-zone-label left';
-  labelLeft.textContent = '← skip';
+  labelLeft.textContent = '← unread';
   const labelRight = document.createElement('div');
   labelRight.className = 'sort-zone-label right';
   labelRight.textContent = 'read →';
@@ -1414,6 +1513,8 @@ function updateSortProgress() {
     }
   }
 
+  // Total decided = read + later + rejected (replaces the old triageCount() second loop)
+  const totalDone = readCount + laterCount + rejectedCount;
   const remaining = sortState.queue.length + (sortState.current ? 1 : 0);
 
   // Session pace
@@ -1421,15 +1522,15 @@ function updateSortProgress() {
   let paceStr = '—', etaStr = '—', todayStr = '—';
 
   if (triageSession.startTime) {
-    const elapsed = (now - triageSession.startTime) / 1000 / 3600; // hours
-    const sessionDone = triageCount() - triageSession.countStart;
+    const elapsed    = (now - triageSession.startTime) / 1000 / 3600; // hours
+    const sessionDone = totalDone - triageSession.countStart;
 
     if (elapsed > 0.005 && sessionDone > 0) {
       const perHour = Math.round(sessionDone / elapsed);
       paceStr = perHour.toLocaleString();
       if (remaining > 0 && perHour > 0) {
         const hrsLeft = remaining / perHour;
-        if (hrsLeft < 1)      etaStr = Math.round(hrsLeft * 60) + 'm';
+        if (hrsLeft < 1)       etaStr = Math.round(hrsLeft * 60) + 'm';
         else if (hrsLeft < 24) etaStr = hrsLeft.toFixed(1) + 'h';
         else                   etaStr = Math.round(hrsLeft / 24) + 'd';
       }
@@ -1472,6 +1573,7 @@ function sortDecide(action) {
   // 'skip' = no change
 
   if (action !== 'skip') {
+    invalidateMergeCache();
     // Record triage decision in history so it can be reverted
     matchHistory.unshift({ type: 'triage', bookId: id, action, ts: Date.now() });
     scheduleSave();
@@ -1512,8 +1614,6 @@ function attachSortEvents() {
     if (e.key === 'ArrowLeft')  { e.preventDefault(); sortDecide('skip');     return; }
     if (e.key === 'ArrowUp')    { e.preventDefault(); sortDecide('later');    return; }
     if (e.key === 'ArrowDown')  { e.preventDefault(); sortDecide('rejected'); return; }
-    if (e.key === 'l' || e.key === 'L') { e.preventDefault(); sortDecide('later');    return; }
-    if (e.key === 'x' || e.key === 'X') { e.preventDefault(); sortDecide('rejected'); return; }
   });
 
   document.getElementById('btn-sort-later').addEventListener('click',  () => sortDecide('later'));
@@ -1524,6 +1624,201 @@ function attachSortEvents() {
     triageSession.countStart = triageCount();
     initSortQueue();
     showSortView();
+  });
+}
+
+
+// ── Triage / quality-rating view ───────────────────────────────────────────
+const triageState = {
+  queue:     [],
+  current:   null,
+  animating: false,
+};
+
+function initTriageQueue() {
+  // All read books passing content filter, shuffled
+  triageState.queue = getAllReadBooks().map(b => b.id);
+  for (let i = triageState.queue.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [triageState.queue[i], triageState.queue[j]] = [triageState.queue[j], triageState.queue[i]];
+  }
+  triageState.current = null;
+}
+
+function showTriageView() {
+  const noBooks = document.getElementById('triage-no-books');
+  const empty   = document.getElementById('triage-empty');
+  const arena   = document.getElementById('triage-arena');
+  const header  = document.getElementById('triage-view-header');
+  const updown  = document.getElementById('triage-updown-hints');
+
+  const readCount = getAllReadBooks().length;
+  if (state.calibreBooks.length === 0 || readCount === 0) {
+    noBooks.classList.add('visible');
+    empty.classList.remove('visible');
+    arena.style.display = 'none';
+    header.style.display = 'none';
+    if (updown) updown.style.display = 'none';
+    return;
+  }
+
+  noBooks.classList.remove('visible');
+  arena.style.display   = '';
+  header.style.display  = '';
+  if (updown) updown.style.display = '';
+
+  if (triageState.queue.length === 0 && !triageState.current) initTriageQueue();
+  advanceTriageCard(false);
+}
+
+function advanceTriageCard(animate, direction) {
+  const card   = document.getElementById('triage-card');
+  const empty  = document.getElementById('triage-empty');
+  const arena  = document.getElementById('triage-arena');
+  const updown = document.getElementById('triage-updown-hints');
+
+  // Keep only still-read books
+  triageState.queue = triageState.queue.filter(id => getUser(id).read);
+
+  const nextId = triageState.queue.shift() || null;
+
+  const doShow = () => {
+    triageState.current = nextId;
+    if (!nextId) {
+      empty.classList.add('visible');
+      arena.style.display = 'none';
+      if (updown) updown.style.display = 'none';
+      updateTriageProgress();
+      return;
+    }
+    empty.classList.remove('visible');
+    arena.style.display   = '';
+    if (updown) updown.style.display = '';
+    renderTriageCard(nextId);
+    updateTriageProgress();
+    card.classList.remove('anim-left','anim-right','anim-up','anim-down','anim-in',
+      'triage-hint-left','triage-hint-right');
+    void card.offsetWidth;
+    card.classList.add('anim-in');
+    card.addEventListener('animationend', () => {
+      card.classList.remove('anim-in');
+      triageState.animating = false;
+    }, { once: true });
+  };
+
+  if (animate && direction) {
+    triageState.animating = true;
+    card.classList.add('anim-' + direction);
+    card.addEventListener('animationend', doShow, { once: true });
+  } else {
+    triageState.animating = false;
+    doShow();
+  }
+}
+
+async function renderTriageCard(id) {
+  const book   = mergedBook(state.bookMap[id]);
+  const card   = document.getElementById('triage-card');
+  const btnWrap = document.getElementById('triage-open-btns');
+
+  const sampleEl = buildCardContent(card, book, { showElo: false, samplePlaceholder: book.epubPath ? 'Loading sample…' : '' });
+
+  // Zone labels
+  const lblLeft = document.createElement('div');
+  lblLeft.className = 'sort-zone-label left';
+  lblLeft.textContent = '← bad';
+  const lblRight = document.createElement('div');
+  lblRight.className = 'sort-zone-label right triage-zone-good';
+  lblRight.textContent = 'good →';
+  card.appendChild(lblLeft);
+  card.appendChild(lblRight);
+
+  btnWrap.innerHTML = '';
+  if (book.epubPath) {
+    const btn = document.createElement('button');
+    btn.className = 'ghost-btn sort-open-btn';
+    btn.textContent = 'Open in reader';
+    btn.addEventListener('click', () => window.api.openEpub(book.epubPath));
+    btnWrap.appendChild(btn);
+
+    window.api.epubSample(book.epubPath).then(sample => {
+      if (triageState.current !== id) return;
+      sampleEl.innerHTML = '';
+      if (!sample) { sampleEl.textContent = '(no readable sample found)'; return; }
+      sample.split(/\n+/).forEach(para => {
+        const p = document.createElement('p');
+        p.textContent = para.trim();
+        if (p.textContent) sampleEl.appendChild(p);
+      });
+    });
+  } else {
+    sampleEl.textContent = '(no epub file)';
+  }
+}
+
+function updateTriageProgress() {
+  let great = 0, good = 0, average = 0, bad = 0;
+  for (const id in state.userBooks) {
+    const q = state.userBooks[id].quality;
+    if      (q === 'great')   great++;
+    else if (q === 'good')    good++;
+    else if (q === 'average') average++;
+    else if (q === 'bad')     bad++;
+  }
+  const remaining = triageState.queue.length + (triageState.current ? 1 : 0);
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set('ts-remaining', remaining.toLocaleString());
+  set('ts-great',     great.toLocaleString());
+  set('ts-good',      good.toLocaleString());
+  set('ts-average',   average.toLocaleString());
+  set('ts-bad',       bad.toLocaleString());
+}
+
+function triageDecide(quality) {
+  if (triageState.animating || !triageState.current) return;
+  const id = triageState.current;
+  const u  = getUser(id);
+  u.quality = quality;
+  invalidateMergeCache();
+  matchHistory.unshift({ type: 'triage-quality', bookId: id, quality, ts: Date.now() });
+  scheduleSave();
+  renderStats();
+  if (document.getElementById('view-history').classList.contains('active')) renderHistory();
+  const dirMap = { great: 'up', good: 'right', average: 'down', bad: 'left' };
+  advanceTriageCard(true, dirMap[quality]);
+}
+
+function attachTriageEvents() {
+  const card = document.getElementById('triage-card');
+
+  card.addEventListener('click', function(e) {
+    if (triageState.animating) return;
+    const rect = card.getBoundingClientRect();
+    triageDecide(e.clientX < rect.left + rect.width / 2 ? 'bad' : 'good');
+  });
+
+  card.addEventListener('mousemove', function(e) {
+    if (triageState.animating) return;
+    const rect = card.getBoundingClientRect();
+    card.classList.toggle('triage-hint-left',  e.clientX < rect.left + rect.width / 2);
+    card.classList.toggle('triage-hint-right', e.clientX >= rect.left + rect.width / 2);
+  });
+  card.addEventListener('mouseleave', function() {
+    card.classList.remove('triage-hint-left', 'triage-hint-right');
+  });
+
+  document.addEventListener('keydown', function(e) {
+    if (!document.getElementById('view-triage').classList.contains('active')) return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'ArrowUp')    { e.preventDefault(); triageDecide('great');   return; }
+    if (e.key === 'ArrowRight') { e.preventDefault(); triageDecide('good');    return; }
+    if (e.key === 'ArrowDown')  { e.preventDefault(); triageDecide('average'); return; }
+    if (e.key === 'ArrowLeft')  { e.preventDefault(); triageDecide('bad');     return; }
+  });
+
+  document.getElementById('btn-triage-restart').addEventListener('click', function() {
+    initTriageQueue();
+    showTriageView();
   });
 }
 
@@ -1546,6 +1841,7 @@ function switchView(name) {
     }
     showSortView();
   }
+  if (name === 'triage')   showTriageView();
   if (name === 'history')  renderHistory();
   if (name === 'settings') renderSettings();
 }
@@ -1649,7 +1945,8 @@ function renderSettings() {
   confirmBtn.addEventListener('click', () => {
     // Commit pending → live
     settings.hiddenFilters = Object.assign({}, pendingFilters.hiddenFilters);
-    pendingFilters.active = false; // will be re-initialised on next render
+    pendingFilters.active = false;
+    invalidateFilterCtx();
     scheduleSave();
     recomputeVisible(); vsLastStart = -1; renderAll();
     confirmBtn.classList.remove('has-changes');
@@ -1716,6 +2013,7 @@ function renderSettings() {
     const v = fi.value.trim();
     if (!v || allFandoms().includes(v)) { fi.value = ''; return; }
     settings.extraFandoms.push(v);
+    invalidateFandomCache();
     scheduleSave();
     pendingFilters.active = false; // reset pending so new fandom row reflects correct state
     renderSettings();
@@ -1747,6 +2045,7 @@ function renderSettings() {
     matchHistory.length = 0;
     seenPairs.clear();
     compareStats.total = 0;
+    invalidateMergeCache();
     scheduleSave(); renderAll();
   });
   const folderBtn = document.createElement('button');
@@ -1779,6 +2078,7 @@ function hideEmptyState() { document.getElementById('empty-state').classList.rem
 function attachEvents() {
   initVscroll();
   attachSortEvents();
+  attachTriageEvents();
 
   document.querySelectorAll('.nav-btn').forEach(btn =>
     btn.addEventListener('click', () => switchView(btn.dataset.view))
